@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Protocol
+from typing import Protocol, Self
 
 
 @dataclass
