@@ -3,10 +3,12 @@ name = "tokbench"
 version = "0.0.1"
 description = "Cost and energy per token of LLM serving under a p99 SLO"
 requires-python = ">=3.11"
-dependencies = ["aiohttp>=3.9"]
+dependencies = ["aiohttp>=3.9", "pyyaml>=6"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+dev = ["pytest", "pytest-asyncio", "ruff", "matplotlib"]
+plots = ["matplotlib"]
+gpu = ["nvidia-ml-py"]
 
 [build-system]
 requires = ["setuptools>=68"]
