@@ -12,3 +12,7 @@ Chose thesis: cost/energy-per-token frontier under a p99 SLO (serving -> quantiz
 ## 2026-10-04 19:01 EDT (at 8ad866c)
 
 Loadgen built and validated against a mock server with known latency. Open loop measures from scheduled arrival (coordinated omission). 5 tests pass locally; no GPU numbers yet. Next: telemetry (NVML + vLLM /metrics) and analysis.
+
+## 2026-10-04 19:07 EDT (at 658d8af)
+
+Telemetry + analysis done on synthetic data (14 tests). Welch p-value cross-checked against scipy once, hardcoded in test. Bumped python to >=3.11 for typing.Self. Still no real-GPU numbers.
