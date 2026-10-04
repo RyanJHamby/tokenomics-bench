@@ -16,3 +16,7 @@ Loadgen built and validated against a mock server with known latency. Open loop 
 ## 2026-10-04 19:07 EDT (at 658d8af)
 
 Telemetry + analysis done on synthetic data (14 tests). Welch p-value cross-checked against scipy once, hardcoded in test. Bumped python to >=3.11 for typing.Self. Still no real-GPU numbers.
+
+## 2026-10-04 19:12 EDT (at aacdbc7)
+
+Runner + report built; make demo (mock server, fake GPU) runs end to end in ~2.5 min and draws the frontier chart watermarked SYNTHETIC. Demo output goes to gitignored demo_out/, not results/, so it can't be mistaken for a measurement. TODO before GPU spend: quality gates (greedy equivalence, eval subset), real B1-B7 configs, freeze PREREG.
