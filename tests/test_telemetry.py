@@ -7,8 +7,10 @@ from tokbench.telemetry import (
     GpuSample,
     MetricsScraper,
     PowerSampler,
+    energy_between,
     energy_joules,
     parse_prometheus,
+    throttle_summary,
 )
 
 PROM = """# HELP vllm:num_requests_running Number of requests running.
@@ -63,3 +65,59 @@ async def test_metrics_scraper_against_local_server():
         await asyncio.sleep(0.3)
     await server.close()
     assert len(sc.rows) >= 3 and sc.rows[0][1]["vllm:num_requests_waiting"] == 3.0
+
+
+def test_energy_between_interpolates_window_ends_exactly():
+    # constant 100 W sampled at t=0,1,2,3: window [0.5, 2.5] must be exactly 200 J
+    s = [GpuSample(t=float(t), power_w=100.0) for t in range(4)]
+    e = energy_between(s, 0.5, 2.5)
+    assert e["energy_j"] == pytest.approx(200.0)
+    assert e["energy_j_counter"] is None
+
+
+def test_energy_between_prefers_counter_and_reports_both():
+    # power says 100 W (100 J over 1 s) but the counter says 150 J: the counter wins.
+    s = [
+        GpuSample(t=0.0, power_w=100, energy_mj=0.0),
+        GpuSample(t=1.0, power_w=100, energy_mj=150_000.0),
+        GpuSample(t=2.0, power_w=100, energy_mj=300_000.0),
+    ]
+    e = energy_between(s, 0.0, 1.0)
+    assert e["energy_j"] == pytest.approx(150.0)
+    assert e["energy_j_power_integral"] == pytest.approx(100.0)
+
+
+def test_energy_between_rejects_bad_window():
+    with pytest.raises(ValueError):
+        energy_between([GpuSample(t=0, power_w=1)], 0, 1)
+
+
+def test_throttle_power_cap_bit_is_not_a_fault_but_thermal_is():
+    cap_only = [GpuSample(t=i, power_w=200, throttle_reasons=0x4) for i in range(4)]
+    s = throttle_summary(cap_only)
+    assert s["cap_bound_fraction"] == 1.0 and s["bad_throttle_seen"] is False
+    hot = cap_only + [GpuSample(t=9, power_w=200, throttle_reasons=0x4 | 0x40)]
+    assert throttle_summary(hot)["bad_throttle_seen"] is True
+    assert throttle_summary(hot)["throttle_reasons_or"] == 0x44
+
+
+def test_sampler_death_is_loud_not_silent():
+    class Dying:
+        n = 0
+
+        def read(self):
+            Dying.n += 1
+            if Dying.n > 3:
+                raise OSError("GPU is lost")
+            return GpuSample(t=time.perf_counter(), power_w=100)
+
+    with pytest.raises(RuntimeError, match="sampler died"), PowerSampler(Dying(), hz=100):
+        time.sleep(0.2)
+
+
+def test_prometheus_histogram_buckets_are_not_summed():
+    m = parse_prometheus(
+        'h_bucket{le="1"} 5\nh_bucket{le="+Inf"} 9\nh_sum 3.5\nh_count 9\nh_created 1e9\n'
+    )
+    assert "h_bucket" not in m and "h_created" not in m
+    assert m["h_sum"] == 3.5 and m["h_count"] == 9

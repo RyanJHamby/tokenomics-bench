@@ -27,6 +27,9 @@ def parse_prometheus(text: str) -> dict[str, float]:
         m = _LINE.match(line)
         if not m:
             continue
+        name = m.group(1)
+        if name.endswith(("_bucket", "_created")):  # histogram buckets are not sums
+            continue
         try:
             v = float(m.group(3))
         except ValueError:
@@ -49,7 +52,7 @@ class MetricsScraper:
                 try:
                     async with s.get(self.url) as r:
                         self.rows.append((time.perf_counter(), parse_prometheus(await r.text())))
-                except aiohttp.ClientError:
+                except (aiohttp.ClientError, TimeoutError, ValueError):
                     pass
                 await asyncio.sleep(self.interval_s)
 
