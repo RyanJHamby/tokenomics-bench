@@ -65,3 +65,33 @@ def test_p99_sees_a_2pct_tail_and_ignores_failures():
     # single stall decides it. This is why cells need thousands of requests.
     few = [_rec(i, 0.1, 5, 0.01) for i in range(98)] + [_rec(98, 4.0, 5, 0.01)]
     assert summarize(few)["ttft_p99"] < 0.5
+
+
+def _w(t_sched, t_first, t_last, n_out=10, ok=True):
+    return RequestRecord(
+        t_sched=t_sched, t_send=t_sched, t_first=t_first, t_last=t_last, n_out=n_out, ok=ok
+    )
+
+
+def test_window_attribution_latency_by_arrival_throughput_by_completion():
+    from tokbench.loadgen import summarize_window
+
+    recs = [
+        _w(5, 5.2, 5.9),  # arrived before the window, completes inside: counts for tokens only
+        _w(10, 10.2, 10.9),  # inside entirely: counts for both
+        _w(19, 19.3, 20.6),  # arrives inside, completes after: latency yes, tokens no
+        _w(25, 25.1, 25.5),  # after the window: neither
+    ]
+    s = summarize_window(recs, 10.0, 20.0, ttft_slo=1.0, tpot_slo=1.0)
+    assert s["n_requests"] == 2 and s["n_ok"] == 2
+    assert s["output_tokens"] == 10 and s["throughput_tok_s"] == pytest.approx(1.0)
+    assert s["offered_req_s"] == pytest.approx(0.2) and s["completed_req_s"] == pytest.approx(0.1)
+
+
+def test_window_counts_unfinished_as_failures_and_slo_misses():
+    from tokbench.loadgen import summarize_window
+
+    inc = RequestRecord(t_sched=11, t_send=11, ok=False, error="incomplete", t_last=21)
+    s = summarize_window([_w(10, 10.1, 10.5), inc], 10.0, 20.0, 1.0, 1.0)
+    assert s["n_failed"] == 1 and s["errors"] == ["incomplete"]
+    assert s["slo_attainment"] == 0.5

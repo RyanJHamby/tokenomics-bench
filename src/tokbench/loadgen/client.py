@@ -15,6 +15,7 @@ and counts against SLO attainment; failures are never silently dropped.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import random
 import time
@@ -63,10 +64,12 @@ async def _one(
     session: aiohttp.ClientSession,
     url: str,
     body: dict,
-    t_sched: float,
+    rec: RequestRecord,
     expect_out: int | None = None,
 ) -> RequestRecord:
-    rec = RequestRecord(t_sched=t_sched, t_send=time.perf_counter())
+    """Fill `rec` in place (the caller keeps a reference, so a cancelled request is still
+    recorded, as a failure)."""
+    rec.t_send = time.perf_counter()
     chunks = 0
     usage_tokens: int | None = None
     saw_done = False
@@ -111,11 +114,27 @@ async def _one(
                 rec.error = f"short: {rec.n_out}/{expect_out}"
         rec.ok = not rec.error
         rec.t_last = rec.t_last or time.perf_counter()
+    except asyncio.CancelledError:
+        rec.error, rec.ok = "incomplete", False  # still running when the drain deadline hit
+        rec.t_last = time.perf_counter()
+        raise
     except Exception as e:  # noqa: BLE001 - record any transport failure
         rec.error = type(e).__name__
         rec.ok = False
         rec.t_last = time.perf_counter()
     return rec
+
+
+async def _finish(tasks: list[asyncio.Task], deadline: float | None) -> None:
+    """Wait for tasks; at the deadline cancel the rest. Cancelled requests keep their record
+    marked 'incomplete', so overload shows up as failures instead of vanishing."""
+    if not tasks:
+        return
+    timeout = None if deadline is None else max(0.0, deadline - time.perf_counter())
+    _, pending = await asyncio.wait(tasks, timeout=timeout)
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _session(timeout_s: float, limit: int) -> aiohttp.ClientSession:
@@ -125,28 +144,42 @@ def _session(timeout_s: float, limit: int) -> aiohttp.ClientSession:
     )
 
 
+def _check_stop(n_requests: int | None, duration_s: float | None) -> None:
+    if (n_requests is None) == (duration_s is None):
+        raise ValueError("give exactly one of n_requests or duration_s")
+
+
 async def run_closed_loop(
     url: str,
     make_body: PromptFn,
     concurrency: int,
-    n_requests: int,
+    n_requests: int | None = None,
     timeout_s: float = 300.0,
     expect_out: int | None = None,
+    *,
+    duration_s: float | None = None,
+    drain_s: float = 60.0,
 ) -> tuple[list[RequestRecord], float]:
-    """Returns (records, wall_seconds)."""
+    """Returns (records, wall_seconds). With duration_s, workers stop *starting* requests
+    at the deadline and in-flight ones get `drain_s` to finish."""
+    _check_stop(n_requests, duration_s)
     records: list[RequestRecord] = []
-    counter = iter(range(n_requests))
+    counter = itertools.count() if duration_s is not None else iter(range(n_requests))
 
     async with _session(timeout_s, concurrency) as session:
+        t0 = time.perf_counter()
+        stop = t0 + duration_s if duration_s is not None else float("inf")
 
         async def worker() -> None:
             for i in counter:
-                records.append(
-                    await _one(session, url, make_body(i), time.perf_counter(), expect_out)
-                )
+                if time.perf_counter() >= stop:
+                    return
+                rec = RequestRecord(t_sched=time.perf_counter(), t_send=0.0)
+                records.append(rec)
+                await _one(session, url, make_body(i), rec, expect_out)
 
-        t0 = time.perf_counter()
-        await asyncio.gather(*(worker() for _ in range(concurrency)))
+        tasks = [asyncio.create_task(worker()) for _ in range(concurrency)]
+        await _finish(tasks, stop + drain_s if duration_s is not None else None)
         return records, time.perf_counter() - t0
 
 
@@ -154,19 +187,29 @@ async def run_open_loop(
     url: str,
     make_body: PromptFn,
     rate_qps: float,
-    n_requests: int,
+    n_requests: int | None = None,
     seed: int = 0,
     timeout_s: float = 300.0,
     max_in_flight: int = 4096,
     expect_out: int | None = None,
+    *,
+    duration_s: float | None = None,
+    drain_s: float = 60.0,
 ) -> tuple[list[RequestRecord], float]:
-    """Poisson arrivals at rate_qps. Returns (records, wall_seconds)."""
+    """Poisson arrivals at rate_qps for n_requests or duration_s. Returns (records, wall).
+    Latency is measured from the scheduled arrival, so queueing delay is counted."""
+    _check_stop(n_requests, duration_s)
     rng = random.Random(seed)
     arrivals, t = [], 0.0
-    for _ in range(n_requests):
+    while True:
         t += rng.expovariate(rate_qps)
+        if (duration_s is not None and t >= duration_s) or (
+            n_requests is not None and len(arrivals) >= n_requests
+        ):
+            break
         arrivals.append(t)
 
+    records: list[RequestRecord] = []
     async with _session(timeout_s, max_in_flight) as session:
         t0 = time.perf_counter()
         tasks = []
@@ -174,8 +217,9 @@ async def run_open_loop(
             delay = t0 + offset - time.perf_counter()
             if delay > 0:
                 await asyncio.sleep(delay)
-            tasks.append(
-                asyncio.create_task(_one(session, url, make_body(i), t0 + offset, expect_out))
-            )
-        records = await asyncio.gather(*tasks)
-        return list(records), time.perf_counter() - t0
+            rec = RequestRecord(t_sched=t0 + offset, t_send=0.0)
+            records.append(rec)
+            tasks.append(asyncio.create_task(_one(session, url, make_body(i), rec, expect_out)))
+        deadline = t0 + duration_s + drain_s if duration_s is not None else None
+        await _finish(tasks, deadline)
+        return records, time.perf_counter() - t0

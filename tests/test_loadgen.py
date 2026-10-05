@@ -4,7 +4,7 @@ refuses to call broken streams successes."""
 import pytest
 from aiohttp.test_utils import TestServer
 
-from tokbench.loadgen import run_closed_loop, run_open_loop, summarize
+from tokbench.loadgen import run_closed_loop, run_open_loop, summarize, summarize_window
 from tokbench.mockserver import make_app
 
 TPOT = 0.01
@@ -69,3 +69,47 @@ async def test_short_completion_fails_when_length_is_pinned(url):
     recs, _ = await run_closed_loop(url, body, 1, 2, expect_out=N_OUT + 5)
     assert not any(r.ok for r in recs)
     assert all(r.error.startswith("short") for r in recs)
+
+
+async def test_duration_open_loop_stops_arrivals_at_deadline(url):
+    t0 = __import__("time").perf_counter()
+    recs, wall = await run_open_loop(url, body, rate_qps=20, duration_s=2.0, seed=3)
+    assert 20 <= len(recs) <= 65  # Poisson(40) with wide tolerance
+    assert all(r.t_sched - t0 < 2.05 for r in recs)
+    assert all(r.ok for r in recs) and wall < 4.0
+
+
+async def test_overload_with_drain_deadline_is_recorded_as_incomplete_failures():
+    # 1 slot, 0.5 s per request => capacity 2 req/s. Offer 10 req/s for 2 s, drain only 0.3 s.
+    server, u = await _serve(slots=1, tpot_s=0.05)
+    try:
+        t0 = __import__("time").perf_counter()
+        recs, _ = await run_open_loop(
+            u,
+            lambda i: {**body(i), "max_tokens": 10},
+            rate_qps=10,
+            duration_s=2.0,
+            drain_s=0.3,
+            seed=1,
+            expect_out=10,
+        )
+    finally:
+        await server.close()
+    s = summarize_window(recs, t0, t0 + 2.0, ttft_slo=1.0, tpot_slo=0.2)
+    assert "incomplete" in s["errors"] and s["n_failed"] > 0
+    assert s["completed_req_s"] < 0.5 * s["offered_req_s"]  # service rate, not offered load
+    assert s["slo_attainment"] < 0.5  # failures are misses
+    assert not any(r.t_last is None for r in recs)
+
+
+async def test_closed_loop_duration_stops_starting_new_requests(url):
+    t0 = __import__("time").perf_counter()
+    recs, _ = await run_closed_loop(url, body, 2, duration_s=1.0, expect_out=N_OUT)
+    assert recs and all(r.t_send - t0 < 1.05 for r in recs) and all(r.ok for r in recs)
+
+
+async def test_exactly_one_stop_condition_required(url):
+    with pytest.raises(ValueError):
+        await run_open_loop(url, body, 5)
+    with pytest.raises(ValueError):
+        await run_closed_loop(url, body, 1, 5, duration_s=1.0)
