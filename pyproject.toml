@@ -3,7 +3,7 @@ name = "tokbench"
 version = "0.0.1"
 description = "Cost and energy per token of LLM serving under a p99 SLO"
 requires-python = ">=3.11"
-dependencies = ["aiohttp>=3.9", "pyyaml>=6"]
+dependencies = ["aiohttp>=3.9,<4", "pyyaml>=6,<7"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff", "matplotlib"]
