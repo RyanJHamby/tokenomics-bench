@@ -21,7 +21,7 @@ from pathlib import Path
 import aiohttp
 
 from .config import load_config
-from .quality import gsm8k_accuracy, load_gsm8k
+from .quality import gsm8k_accuracy, load_gsm8k, paired_accuracy
 from .runner import PORT
 from .server import ServerProcess, server_cmd
 from .workloads import make_prompt_fn
@@ -86,7 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--noise", nargs=2, required=True, metavar=("RUN1", "RUN2"))
     g = sub.add_parser("gsm8k")
     g.add_argument("config"), g.add_argument("variant"), g.add_argument("data")
-    g.add_argument("--n", type=int, default=200)
+    g.add_argument("out")
+    g.add_argument("--n", type=int, default=1319)
+    q = sub.add_parser("gsm8k-compare")
+    q.add_argument("base"), q.add_argument("cand")
+    q.add_argument("--margin", type=float, default=0.02)
     a = ap.parse_args(argv)
 
     if a.cmd == "collect":
@@ -103,6 +107,13 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(res, indent=2))
         return 0 if res["verdict"] == "pass" else 1
+    elif a.cmd == "gsm8k-compare":
+        base, cand = (json.loads(Path(x).read_text()) for x in (a.base, a.cand))
+        if base["items"] != cand["items"]:
+            raise SystemExit("baseline and candidate were scored on different items")
+        res = paired_accuracy(base["correct"], cand["correct"], a.margin)
+        print(json.dumps({"base": base["variant"], "cand": cand["variant"], **res}, indent=2))
+        return 0 if res["verdict"] in ("equivalent", "non_inferior") else 1
     else:
         cfg = load_config(a.config)
         v = _variant(cfg, a.variant)
@@ -113,7 +124,15 @@ def main(argv: list[str] | None = None) -> int:
                 cfg, v, lambda base: gsm8k_accuracy(f"{base}/v1/chat/completions", model, items)
             )
         )
-        print(json.dumps({"variant": a.variant, **res}, indent=2))
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(
+            json.dumps({"variant": a.variant, "items": [it["question"] for it in items], **res})
+        )
+        print(
+            json.dumps(
+                {"variant": a.variant, **{k: v for k, v in res.items() if k != "correct"}}, indent=2
+            )
+        )
     return 0
 
 

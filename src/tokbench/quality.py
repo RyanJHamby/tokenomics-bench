@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,24 +74,74 @@ def load_gsm8k(path: str | Path, n: int, seed: int = 0) -> list[dict]:
     ]
 
 
-async def gsm8k_accuracy(url: str, model: str, items: list[dict], max_tokens: int = 384) -> dict:
-    correct = 0
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as s:
-        for it in items:
-            body = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": it["question"] + "\nEnd with: The answer is <number>.",
-                    }
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0,
-            }
-            if last_number(await _complete(s, url, body)) == it["answer"]:
-                correct += 1
+async def gsm8k_accuracy(
+    url: str, model: str, items: list[dict], max_tokens: int = 1024, concurrency: int = 32
+) -> dict:
+    """Score every item; returns per-item correctness (needed for a paired comparison).
+    max_tokens is generous: truncating a chain of thought would score as wrong and
+    masquerade as a quality loss."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(session: aiohttp.ClientSession, it: dict) -> bool:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": it["question"] + "\nEnd with: The answer is <number>."}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        }
+        async with sem:
+            return last_number(await _complete(session, url, body)) == it["answer"]
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=1800)) as s:
+        correct = await asyncio.gather(*(one(s, it) for it in items))
     n = len(items)
-    p = correct / n if n else float("nan")
+    p = sum(correct) / n if n else float("nan")
     se = (p * (1 - p) / n) ** 0.5 if n else float("nan")
-    return {"n": n, "correct": correct, "accuracy": p, "stderr": se}
+    return {
+        "n": n,
+        "n_correct": sum(correct),
+        "accuracy": p,
+        "stderr": se,
+        "correct": [bool(c) for c in correct],
+    }
+
+
+def paired_accuracy(base: list[bool], cand: list[bool], margin: float = 0.02) -> dict:
+    """Candidate vs baseline accuracy on the SAME items (paired), difference d = cand - base.
+
+    Pairing removes item difficulty from the variance, so a few hundred discordant items
+    can resolve a ~2pp gap that unpaired standard errors (~1pp each at n=1319) cannot.
+    Verdicts against +/- margin: 'non_inferior' (CI above -margin), 'equivalent' (CI inside
+    +/- margin), 'inferior' (CI below -margin), else 'inconclusive'. Exact McNemar p-value.
+    """
+    if len(base) != len(cand) or not base:
+        raise ValueError("need equal-length, non-empty paired outcomes")
+    n = len(base)
+    n_base_only = sum(b and not c for b, c in zip(base, cand, strict=True))
+    n_cand_only = sum(c and not b for b, c in zip(base, cand, strict=True))
+    d = (n_cand_only - n_base_only) / n
+    disc = n_base_only + n_cand_only
+    var = (disc - (n_cand_only - n_base_only) ** 2 / n) / n**2
+    se = var**0.5
+    lo, hi = d - 1.959964 * se, d + 1.959964 * se
+    k = min(n_base_only, n_cand_only)
+    p = 1.0 if disc == 0 else min(1.0, 2 * sum(math.comb(disc, i) for i in range(k + 1)) / 2**disc)
+    if hi < -margin:
+        verdict = "inferior"
+    elif lo > -margin and hi < margin:
+        verdict = "equivalent"
+    elif lo > -margin:
+        verdict = "non_inferior"
+    else:
+        verdict = "inconclusive"
+    return {
+        "n": n,
+        "diff": d,
+        "ci": (lo, hi),
+        "mcnemar_p": p,
+        "verdict": verdict,
+        "discordant": disc,
+        "margin": margin,
+    }
