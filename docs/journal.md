@@ -36,3 +36,7 @@ Tier 0 fixes landed after four adversarial reviews (methodology, code-break, fro
 ## 2026-10-04 22:31 EDT (at 341d503)
 
 Pre-registration v2 frozen (tag prereg-v2); v1 kept at prereg-v1 with a SUPERSEDED banner. Changes after the 4 adversarial reviews: goodput + one steady window for latency/throughput/energy; time-based warmup, soak, idle baseline, shuffled load order; capacity by bisection to 8% (replaces QPS grids); paired-launch t-interval stats with margin verdicts (replaces Welch on 3 repeats); numeric hypotheses P1-P6; clock lock vs power cap as the sharp question; arms generated from measured pilot power and card limits; paired full-GSM8K quality gate; roofline predictions committed first (docs/PREDICTIONS.md, hardware specs UNVERIFIED). Planned ~13.7 GPU-h vs $60 cap. NOT verified: anything on real vLLM/NVML/provider; whether any provider allows -pl/-lgc; the hardware datasheet figures; vLLM 0.30.0 flag acceptance (preflight checks). I (Claude) rewrote README AI-disclosure; author must confirm its accuracy.
+
+## 2026-10-05 08:27 EDT (at 301ebb9)
+
+Pre-run amendment to prereg-v2 validity rules (tightening only, not outcome-dependent): a cell is invalid if the load generator's event-loop lag p99 exceeds 10 ms (client saturation), per the hardware reviewer's concern that a single asyncio client could distort TTFT/ITL. Added scripts/crosscheck.sh: tokbench vs vllm bench serve on the SAME server, tolerances fixed in code before any result (throughput 10%, p50 15%, p99 30%). Mock-only so far; real behaviour unverified. CI green for prereg-v2 push.
