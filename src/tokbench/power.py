@@ -84,3 +84,47 @@ class PowerCap:
     def __exit__(self, *exc) -> None:
         if self.enabled:
             self._restore()
+
+
+class ClockLock:
+    """Lock the SM clock for a launch (`nvidia-smi -lgc`), then reset it (`-rgc`).
+
+    Distinct from a power cap: a cap lets the GPU choose clocks under a power ceiling; a
+    lock pins them. Decode on a small model often draws far below the board limit, so a cap
+    may never bind while a lock still lowers energy per token. Needs root; many containers
+    forbid it.
+    """
+
+    def __init__(self, mhz: int | None, enabled: bool, index: int = 0):
+        self.mhz, self.index = mhz, index
+        self.enabled = enabled and mhz is not None
+        self._locked = False
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        try:
+            top = _q(self.index, "clocks.max.sm")
+            if not 200 <= self.mhz <= top:
+                raise CapUnavailable(f"lock {self.mhz} MHz outside [200, {top}]")
+            subprocess.run(
+                ["nvidia-smi", "-i", str(self.index), "-lgc", f"{self.mhz},{self.mhz}"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            self._locked = True
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            raise CapUnavailable(f"could not lock clocks to {self.mhz} MHz: {e}") from e
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._locked:
+            subprocess.run(
+                ["nvidia-smi", "-i", str(self.index), "-rgc"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
