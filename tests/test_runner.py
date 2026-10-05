@@ -244,3 +244,17 @@ def test_deliberate_overload_is_recorded_not_aborted(setup):
     s = json.loads(next(out.glob("v__*.json")).read_text())["summary"]
     assert "incomplete" in s["errors"] and s["n_failed"] / s["n_requests"] >= 0.5
     assert s["completed_req_s"] < s["offered_req_s"]
+
+
+def test_cells_record_client_loop_lag_and_flag_saturation(setup):
+    make, out = setup
+    assert _run(make(), out) == 0
+    d = json.loads(next(out.glob("v__*.json")).read_text())
+    assert d["client"]["client_ok"] and d["client"]["n_samples"] > 50
+    # an impossible threshold must mark the cell invalid in the aggregate (not crash)
+    from tokbench.report import aggregate, load_cells
+
+    cells = load_cells(out)
+    for c in cells:
+        c["client"]["client_ok"] = False
+    assert all(r["invalid"] for r in aggregate(cells))

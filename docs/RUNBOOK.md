@@ -31,6 +31,9 @@ every flag the configs use, vCPU count, and a checksummed GSM8K file. If a check
 record a deviation; do not work around it silently.
 
 ## Order of operations (dependency order; stop when money runs short)
+First, a ~10 GPU-minute validation of the load generator against vLLM's own benchmark on the
+same server: `PRICE=<live> scripts/crosscheck.sh`. A DISAGREE verdict means a client-side artefact
+(timestamping, event-loop saturation, window definition); understand it before trusting any latency.
 ```
 PRICE=<live> scripts/run_all.sh b1                     # pilot: capacity, batch-1, saturation, variance
 python -m tokbench.pilot results/raw/<STAMP>-b1        # launches needed per margin

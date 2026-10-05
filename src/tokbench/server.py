@@ -134,3 +134,26 @@ class ServerProcess:
                     return
                 await asyncio.sleep(2)
             print("[warn] GPU memory still held 90 s after server exit", flush=True)
+
+
+class AttachedServer:
+    """Use an already-running server (no launch, no teardown). For cross-checking this load
+    generator against another tool on the very same server instance."""
+
+    def __init__(self, base: str, timeout_s: float = 30.0):
+        self.base, self.timeout = base.rstrip("/"), timeout_s
+
+    async def __aenter__(self) -> Self:
+        async with aiohttp.ClientSession() as s:
+            try:
+                async with s.get(
+                    f"{self.base}/health", timeout=aiohttp.ClientTimeout(self.timeout)
+                ) as r:
+                    if r.status != 200:
+                        raise RuntimeError(f"attached server unhealthy: HTTP {r.status}")
+            except aiohttp.ClientError as e:
+                raise RuntimeError(f"cannot reach attached server {self.base}: {e}") from e
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None

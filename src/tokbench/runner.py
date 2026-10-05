@@ -37,10 +37,10 @@ from .config import (
     read_capacity,
     resolve_loads,
 )
-from .loadgen import run_closed_loop, run_open_loop, summarize_window
+from .loadgen import LoopLagMonitor, run_closed_loop, run_open_loop, summarize_window
 from .manifest import manifest
 from .power import CapUnavailable, ClockLock, PowerCap
-from .server import ServerProcess, server_cmd
+from .server import AttachedServer, ServerProcess, server_cmd
 from .telemetry import (
     FakeBackend,
     MetricsScraper,
@@ -174,7 +174,8 @@ async def run_load(
         return run / slots
 
     total = cfg["warmup_s"] + cfg["measure_s"]
-    async with scraper:
+    lag = LoopLagMonitor()
+    async with scraper, lag:
         with PowerSampler(make_backend(args, variant, fake_load), hz=SAMPLE_HZ) as power:
             t0 = time.perf_counter()
             ws, we = t0 + cfg["warmup_s"], t0 + total
@@ -223,6 +224,7 @@ async def run_load(
         },
         "power": throttle_summary(in_win or power.samples),
         "sampler_ok": len(power.samples) >= 0.5 * SAMPLE_HZ * (t1 - t0),
+        "client": lag.summary(cfg["max_client_lag_ms"]),
         "workload_ok": workload_ok,
         "server_metrics": stats,
         "counter_deltas": counter_deltas(stats),
@@ -264,6 +266,12 @@ def _print_cell(load: dict, res: dict) -> None:
 
 def _check_cell(res: dict) -> None:
     s = res["summary"]
+    if not res["client"]["client_ok"]:
+        print(
+            f"  WARN client saturated: loop lag p99 {res['client']['loop_lag_p99_ms']:.1f} ms; "
+            "cell is flagged invalid (move the client to dedicated cores / reduce load)",
+            flush=True,
+        )
     if not res["workload_ok"]:
         raise CellFailed(
             f"server saw {s['mean_prompt_tokens']} prompt tokens, config says "
@@ -315,17 +323,22 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
     if launch_done(cfg, out, launch) or not todo:
         print(f"[skip] {variant['name']} r{launch.repeat}: already done", flush=True)
         return
-    cmd = server_cmd(args.server, cfg, variant, PORT)
-    print(f"[launch] {variant['name']} repeat={launch.repeat}: {' '.join(cmd)}", flush=True)
     real = args.gpu == "nvml"
-    async with ServerProcess(
-        cmd,
-        PORT,
-        cfg["startup_seconds"] * 3,
-        quiet=args.quiet_server,
-        wait_gpu_free=real,
-        gpu_index=args.gpu_index,
-    ) as srv:
+    if args.attach:
+        print(f"[attach] {variant['name']} repeat={launch.repeat}: {args.attach}", flush=True)
+        server_cm = AttachedServer(args.attach)
+    else:
+        cmd = server_cmd(args.server, cfg, variant, PORT)
+        print(f"[launch] {variant['name']} repeat={launch.repeat}: {' '.join(cmd)}", flush=True)
+        server_cm = ServerProcess(
+            cmd,
+            PORT,
+            cfg["startup_seconds"] * 3,
+            quiet=args.quiet_server,
+            wait_gpu_free=real,
+            gpu_index=args.gpu_index,
+        )
+    async with server_cm as srv:
         with (
             PowerCap(variant.get("power_cap_w"), enabled=real, index=args.gpu_index),
             ClockLock(variant.get("clock_lock_mhz"), enabled=real, index=args.gpu_index),
@@ -362,6 +375,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true", help="print cost estimate and exit")
     ap.add_argument("--quiet-server", action="store_true")
+    ap.add_argument(
+        "--attach", help="use this already-running server (http://host:port); no launch"
+    )
     ap.add_argument(
         "--assume-capacity",
         type=float,
