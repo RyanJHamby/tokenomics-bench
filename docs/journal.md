@@ -44,3 +44,7 @@ Pre-run amendment to prereg-v2 validity rules (tightening only, not outcome-depe
 ## 2026-10-05 19:09 EDT (at 8681f4a)
 
 Pre-run amendments to prereg-v2 (all before any GPU data; none outcome-dependent): (1) DERIVED FINDING is evaluated at SATURATION (c=64), not 0.7x capacity: at 0.7x every arm meets the SLO so goodput equals offered load and cannot rank arms by cost. (2) P6 uses TPOT p50 (stable) as the metric. (3) Holm is applied across the superiority tests (P1a,P1b,P4,P6); equivalence tests P2,P3 are intersection-union TOST at alpha .05, not multiplicity-adjusted. (4) B3a split: FP8 capacity gets 3 launches (my own rule: primary comparisons never <3 launches; the single-launch block violated it); fp8-kv8/AWQ are exploratory. (5) Model: SLO capacity now solved from TPOT-under-load (fp16 predicted ~5.8-12 req/s vs fp8 ~15-26, i.e. TPOT binds before saturation); regenerated PREDICTIONS.md before any run. Bugs found by tracing, not by users: launch_done skipped capacity repeats 2..n (pilot would have had no variance); load_cells crashed on capacity artifacts in the cell dir. Both fixed with regression tests; mock server never exposed them. Still unverified: all behaviour on real vLLM/NVML/providers.
+
+## 2026-10-05 19:21 EDT (at 1f82639)
+
+Tagged prereg-v2.1: amendments A1-A6 recorded in docs/PREREG-v2-amendments.md (PREREG-v2.md untouched). Still no GPU data.
