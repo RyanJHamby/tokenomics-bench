@@ -2,9 +2,12 @@
 load-generator stats, GPU energy, and server metrics as one JSON file per cell.
 
     python -m tokbench.runner configs/b1_knee.yaml --server vllm --gpu nvml \
-        --usd-per-hr 1.20 --out results/b1-2026-10-12 [--dry-run]
+        --usd-per-hr 1.20 --out results/raw/b1-2026-10-12 [--dry-run]
 
 --server mock --gpu fake runs everything on a laptop; results are flagged synthetic.
+
+Resumable: re-running with the same --out skips cells whose JSON already exists and
+parses. A launch whose loads are all done is skipped without starting a server.
 """
 
 from __future__ import annotations
@@ -14,64 +17,48 @@ import asyncio
 import json
 import os
 import signal
-import subprocess
-import sys
 import time
 from pathlib import Path
-
-import aiohttp
 
 from .config import estimate_cost, load_config, load_label, plan
 from .loadgen import run_closed_loop, run_open_loop, summarize
 from .manifest import manifest
-from .telemetry import FakeBackend, MetricsScraper, NvmlBackend, PowerSampler, energy_joules
-from .workloads import make_prompt_fn
+from .power import CapUnavailable, PowerCap
+from .server import ServerProcess, server_cmd
+from .telemetry import (
+    FakeBackend,
+    MetricsScraper,
+    NvmlBackend,
+    PowerSampler,
+    energy_between,
+    throttle_summary,
+)
+from .workloads import make_prompt_fn, salt_for
 
 PORT = 8000
+SCHEMA_VERSION = 2
+SAMPLE_HZ = 10
 
 
-def server_cmd(kind: str, cfg: dict, variant: dict, port: int) -> list[str]:
-    args = [str(a) for a in variant.get("server_args", [])]
-    if kind == "mock":
-        return [sys.executable, "-m", "tokbench.mockserver", "--port", str(port), *args]
-    return ["vllm", "serve", variant.get("model", cfg["model"]), "--port", str(port), *args]
+class CellFailed(RuntimeError):
+    """A load produced no usable data; continuing would only burn GPU time."""
 
 
-async def wait_healthy(base: str, proc: subprocess.Popen, timeout_s: float) -> None:
-    deadline = time.monotonic() + timeout_s
-    async with aiohttp.ClientSession() as s:
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                raise RuntimeError(f"server exited early with code {proc.returncode}")
-            try:
-                async with s.get(f"{base}/health") as r:
-                    if r.status == 200:
-                        return
-            except aiohttp.ClientError:
-                pass
-            await asyncio.sleep(1.0)
-    raise TimeoutError("server did not become healthy")
+def cell_path(out: Path, variant: dict, load: dict, repeat: int) -> Path:
+    return out / f"{variant['name']}__{load_label(load)}__r{repeat}.json"
 
 
-def _nvsmi(*args: str) -> str:
-    return subprocess.run(["nvidia-smi", *args], capture_output=True, text=True, check=True).stdout
+def cell_done(path: Path) -> bool:
+    try:
+        return json.loads(path.read_text()).get("schema_version") == SCHEMA_VERSION
+    except (OSError, ValueError):
+        return False
 
 
-class PowerCap:
-    """Set `nvidia-smi -pl` for the duration of a launch, then restore. Needs root."""
-
-    def __init__(self, watts: float | None, enabled: bool):
-        self.watts, self.enabled, self.prev = watts, enabled and watts is not None, None
-
-    def __enter__(self):
-        if self.enabled:
-            self.prev = _nvsmi("--query-gpu=power.limit", "--format=csv,noheader,nounits").strip()
-            _nvsmi("-pl", str(int(self.watts)))
-        return self
-
-    def __exit__(self, *exc):
-        if self.enabled and self.prev:
-            _nvsmi("-pl", str(int(float(self.prev))))
+def write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def _metric_stats(rows: list[tuple[float, dict]], t0: float, t1: float) -> dict:
@@ -80,11 +67,28 @@ def _metric_stats(rows: list[tuple[float, dict]], t0: float, t1: float) -> dict:
     keys = {k for m in sel for k in m}
     for k in sorted(keys):
         vals = [m[k] for m in sel if k in m]
-        out[k] = {"max": max(vals), "mean": sum(vals) / len(vals), "last": vals[-1]}
+        out[k] = {
+            "max": max(vals),
+            "mean": sum(vals) / len(vals),
+            "first": vals[0],
+            "last": vals[-1],
+        }
     return out
 
 
-async def run_load(cfg: dict, load: dict, base: str, variant: dict, args, repeat: int) -> dict:
+def counter_deltas(stats: dict) -> dict:
+    """Deltas of cumulative counters over the window, plus prefix-cache hit rate."""
+    d = {k: v["last"] - v["first"] for k, v in stats.items() if k.endswith("_total")}
+    hits = next((v for k, v in d.items() if "prefix_cache_hits" in k), None)
+    qs = next((v for k, v in d.items() if "prefix_cache_queries" in k), None)
+    if hits is not None and qs:
+        d["prefix_cache_hit_rate"] = hits / qs
+    return d
+
+
+async def run_load(
+    cfg: dict, load: dict, load_idx: int, base: str, variant: dict, args, repeat: int
+) -> dict:
     wl = variant.get("workload", cfg["workload"])
     model = variant.get("model", cfg["model"])
     make_body = make_prompt_fn(
@@ -93,70 +97,101 @@ async def run_load(cfg: dict, load: dict, base: str, variant: dict, args, repeat
         wl.get("prefix_share", 0.0),
         model,
         cfg["seed"],
+        salt=salt_for(repeat, load_idx),
     )
-    url = f"{base}/v1/chat/completions"
+    url = f"{base}/v1/completions"
+    slo = cfg["slo"]
     scraper = MetricsScraper(f"{base}/metrics", interval_s=0.5)
     slots = max(1, int(variant.get("slots", 8)))
 
     def fake_load() -> float:
-        return (
-            (scraper.rows[-1][1].get("vllm:num_requests_running", 0) / slots) if scraper.rows else 0
-        )
+        run = scraper.rows[-1][1].get("vllm:num_requests_running", 0) if scraper.rows else 0
+        return run / slots
 
     backend = (
         FakeBackend(fake_load, cap_w=variant.get("power_cap_w"))
         if args.gpu == "fake"
-        else NvmlBackend()
+        else NvmlBackend(args.gpu_index)
     )
+    expect = wl["output_tokens"]
     async with scraper:
-        with PowerSampler(backend, hz=10) as power:
+        with PowerSampler(backend, hz=SAMPLE_HZ) as power:
             t0 = time.perf_counter()
             if load["mode"] == "closed":
-                recs, wall = await run_closed_loop(
-                    url, make_body, load["concurrency"], cfg["n_requests"]
+                recs, _ = await run_closed_loop(
+                    url, make_body, load["concurrency"], cfg["n_requests"], expect_out=expect
                 )
             else:
-                recs, wall = await run_open_loop(
-                    url, make_body, load["qps"], cfg["n_requests"], seed=cfg["seed"] + repeat
+                recs, _ = await run_open_loop(
+                    url,
+                    make_body,
+                    load["qps"],
+                    cfg["n_requests"],
+                    seed=cfg["seed"] * 31 + repeat * 7 + load_idx,
+                    expect_out=expect,
                 )
             t1 = time.perf_counter()
-    summary = summarize(recs, wall, warmup=cfg["warmup"])
-    # Energy over the whole load window (warmup included), so divide by all tokens served.
-    window_tokens = sum(r.n_out for r in recs if r.ok)
-    energy = energy_joules([s for s in power.samples if t0 <= s.t <= t1 + 1])
+    kept = sorted(recs, key=lambda r: r.t_send)[cfg["warmup"] :]
+    summary = summarize(recs, warmup=cfg["warmup"], ttft_slo=slo["ttft_s"], tpot_slo=slo["tpot_s"])
+    if summary["n_ok"] == 0:
+        raise CellFailed(f"no successful requests; errors={summary['errors']}")
+
+    mpt = summary["mean_prompt_tokens"]
+    workload_ok = mpt is None or abs(mpt - wl["input_tokens"]) <= max(2, 0.01 * wl["input_tokens"])
+
+    w0, w1 = min(r.t_send for r in kept), max(r.t_last for r in kept)
+    energy = energy_between(power.samples, w0, w1)
+    in_win = [s for s in power.samples if w0 <= s.t <= w1]
+    n_ok, out_tokens = summary["n_ok"], summary["output_tokens"]
+    sampler_ok = len(power.samples) >= 0.5 * SAMPLE_HZ * (t1 - t0)
+    stats = _metric_stats(scraper.rows, t0, t1)
     return {
+        "schema_version": SCHEMA_VERSION,
         "summary": summary,
-        "energy_j": energy,
-        "window_output_tokens": window_tokens,
-        "j_per_token": energy / window_tokens if window_tokens else None,
-        "throttle_seen": any(s.throttle_reasons & ~0x1 for s in power.samples),
-        "mean_power_w": sum(s.power_w for s in power.samples) / len(power.samples),
-        "server_metrics": _metric_stats(scraper.rows, t0, t1),
-        "errors": sorted({r.error for r in recs if r.error}),
+        "slo": slo,
+        "energy": {
+            **energy,
+            "window_s": w1 - w0,
+            "j_per_output_token": energy["energy_j"] / out_tokens if out_tokens else None,
+            "j_per_request": energy["energy_j"] / n_ok,
+        },
+        "power": throttle_summary(in_win or power.samples),
+        "sampler_ok": sampler_ok,
+        "workload_ok": workload_ok,
+        "server_metrics": stats,
+        "counter_deltas": counter_deltas(stats),
     }
 
 
 async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
     variant = launch.variant
-    base = f"http://127.0.0.1:{PORT}"
+    todo = [
+        (i, ld)
+        for i, ld in enumerate(cfg["loads"])
+        if not cell_done(cell_path(out, variant, ld, launch.repeat))
+    ]
+    if not todo:
+        print(f"[skip] {variant['name']} r{launch.repeat}: all loads already done", flush=True)
+        return
     cmd = server_cmd(args.server, cfg, variant, PORT)
     print(f"[launch] {variant['name']} repeat={launch.repeat}: {' '.join(cmd)}", flush=True)
-    proc = await asyncio.to_thread(
-        subprocess.Popen,
+    async with ServerProcess(
         cmd,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL if args.quiet_server else None,
-    )
-    try:
-        await wait_healthy(base, proc, timeout_s=cfg["startup_seconds"] * 3)
-        with PowerCap(variant.get("power_cap_w"), enabled=args.gpu == "nvml"):
-            for load in cfg["loads"]:
-                res = await run_load(cfg, load, base, variant, args, launch.repeat)
+        PORT,
+        cfg["startup_seconds"] * 3,
+        quiet=args.quiet_server,
+        wait_gpu_free=args.gpu == "nvml",
+        gpu_index=args.gpu_index,
+    ) as srv:
+        with PowerCap(variant.get("power_cap_w"), enabled=args.gpu == "nvml", index=args.gpu_index):
+            for load_idx, load in todo:
+                res = await run_load(cfg, load, load_idx, srv.base, variant, args, launch.repeat)
                 res.update(
                     block=cfg["block"],
                     config=cfg["name"],
                     variant=variant["name"],
                     load=load,
+                    load_idx=load_idx,
                     repeat=launch.repeat,
                     gpu_usd_per_hr=args.usd_per_hr,
                     power_cap_w=variant.get("power_cap_w"),
@@ -165,18 +200,31 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
                     workload=variant.get("workload", cfg["workload"]),
                     seed=cfg["seed"],
                 )
-                name = f"{variant['name']}__{load_label(load)}__r{launch.repeat}.json"
-                (out / name).write_text(json.dumps(res, indent=2))
-                s = res["summary"]
+                write_atomic(
+                    cell_path(out, variant, load, launch.repeat), json.dumps(res, indent=2)
+                )
+                s, e = res["summary"], res["energy"]
+                jpt = e["j_per_output_token"]
                 print(
                     f"  {load_label(load):>6} tput={s['throughput_tok_s']:.0f} tok/s "
                     f"ttft_p99={s['ttft_p99']:.3f}s tpot_p99={s['tpot_p99'] * 1000:.1f}ms "
-                    f"J/tok={res['j_per_token']:.3f} fail={s['n_failed']}",
+                    f"J/tok={'n/a' if jpt is None else f'{jpt:.3f}'} "
+                    f"slo={s.get('slo_attainment', float('nan')):.2f} fail={s['n_failed']}",
                     flush=True,
                 )
-    finally:
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=30)
+                if not res["workload_ok"]:
+                    raise CellFailed(
+                        f"server saw {s['mean_prompt_tokens']} prompt tokens, config says "
+                        f"{res['workload']['input_tokens']}: workload is not what it claims"
+                    )
+                if s["n_failed"] / s["n_requests"] >= 0.5:
+                    raise CellFailed(
+                        f"{s['n_failed']}/{s['n_requests']} requests failed: {s['errors']}"
+                    )
+
+
+def _raise_interrupt(signum, _frame) -> None:
+    raise KeyboardInterrupt(f"signal {signum}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("config")
     ap.add_argument("--server", choices=["vllm", "mock"], default="vllm")
     ap.add_argument("--gpu", choices=["nvml", "fake"], default="nvml")
+    ap.add_argument("--gpu-index", type=int, default=0)
     ap.add_argument("--usd-per-hr", type=float, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true", help="print cost estimate and exit")
@@ -193,16 +242,36 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     est = estimate_cost(cfg, args.usd_per_hr)
     print(
-        f"[plan] {est['launches']} server launches, ~{est['gpu_hours']:.2f} GPU-h, ~${est['usd']:.2f}"
+        f"[plan] {est['launches']} server launches, ~{est['gpu_hours']:.2f} GPU-h, "
+        f"~${est['usd']:.2f}"
     )
     if args.dry_run:
         return 0
+    # A dropped ssh session (SIGHUP) or `kill` (SIGTERM) must still run our cleanup.
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+    signal.signal(signal.SIGHUP, _raise_interrupt)
+
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     man = manifest()
-    (out / "manifest.json").write_text(json.dumps(man, indent=2))
+    write_atomic(out / "manifest.json", json.dumps(man, indent=2))
+    skipped = out / "skipped.jsonl"
     for launch in plan(cfg):
-        asyncio.run(run_launch(cfg, launch, args, out, man))
+        try:
+            asyncio.run(run_launch(cfg, launch, args, out, man))
+        except CapUnavailable as e:
+            print(f"[skip-launch] {launch.variant['name']} r{launch.repeat}: {e}", flush=True)
+            with skipped.open("a") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "variant": launch.variant["name"],
+                            "repeat": launch.repeat,
+                            "reason": str(e),
+                        }
+                    )
+                    + "\n"
+                )
     return 0
 
 

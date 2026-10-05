@@ -16,16 +16,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import signal
-import subprocess
 from pathlib import Path
 
 import aiohttp
 
 from .config import load_config
 from .quality import gsm8k_accuracy, load_gsm8k
-from .runner import PORT, server_cmd, wait_healthy
+from .runner import PORT
+from .server import ServerProcess, server_cmd
 from .workloads import make_prompt_fn
 
 
@@ -46,13 +44,8 @@ def _variant(cfg: dict, name: str) -> dict:
 
 async def _with_server(cfg: dict, variant: dict, fn):
     cmd = server_cmd("vllm", cfg, variant, PORT)
-    proc = await asyncio.to_thread(subprocess.Popen, cmd, start_new_session=True)
-    try:
-        await wait_healthy(f"http://127.0.0.1:{PORT}", proc, cfg["startup_seconds"] * 3)
-        return await fn(f"http://127.0.0.1:{PORT}/v1/chat/completions")
-    finally:
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=60)
+    async with ServerProcess(cmd, PORT, cfg["startup_seconds"] * 3, wait_gpu_free=True) as srv:
+        return await fn(srv.base)
 
 
 async def collect(cfg_path: str, variant_name: str, out: str, n: int) -> None:
@@ -67,7 +60,8 @@ async def collect(cfg_path: str, variant_name: str, out: str, n: int) -> None:
         cfg["seed"],
     )
 
-    async def run(url: str) -> list[str]:
+    async def run(base: str) -> list[str]:
+        url = f"{base}/v1/completions"
         outs = []
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as s:
             for i in range(n):  # sequential: batch composition is the same every run
@@ -114,7 +108,11 @@ def main(argv: list[str] | None = None) -> int:
         v = _variant(cfg, a.variant)
         model = v.get("model", cfg["model"])
         items = load_gsm8k(a.data, a.n, cfg["seed"])
-        res = asyncio.run(_with_server(cfg, v, lambda url: gsm8k_accuracy(url, model, items)))
+        res = asyncio.run(
+            _with_server(
+                cfg, v, lambda base: gsm8k_accuracy(f"{base}/v1/chat/completions", model, items)
+            )
+        )
         print(json.dumps({"variant": a.variant, **res}, indent=2))
     return 0
 

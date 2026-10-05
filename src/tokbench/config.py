@@ -35,6 +35,7 @@ def load_config(path: str | Path) -> dict:
         if (load["mode"] == "closed") != ("concurrency" in load):
             raise ValueError(f"closed loads need concurrency, open loads need qps: {load}")
     cfg.setdefault("warmup", 0)
+    cfg.setdefault("slo", {"ttft_s": 2.0, "tpot_s": 0.1})
     cfg.setdefault("seed", 0)
     cfg.setdefault("est_request_s", 4.0)  # rough per-request service time
     cfg.setdefault("startup_seconds", 180)
