@@ -115,6 +115,7 @@ def summarize_window(
         "n_requests": n,
         "n_ok": len(ok),
         "n_failed": n - len(ok),
+        "n_completed": len(done),
         "errors": sorted({r.error for r in arrived if r.error}),
         "window_s": span,
         "offered_req_s": n / span,
