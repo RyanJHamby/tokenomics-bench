@@ -16,8 +16,8 @@ from .config import load_label
 def load_cells(results_dir: str | Path) -> list[dict]:
     cells = []
     for p in sorted(Path(results_dir).glob("*.json")):
-        if p.name == "manifest.json":
-            continue
+        if p.name == "manifest.json" or p.name.startswith("capacity"):
+            continue  # run metadata / capacity-search artefacts live beside the cells
         d = json.loads(p.read_text())
         if d.get("schema_version") != 2:
             raise ValueError(f"{p}: unsupported schema {d.get('schema_version')}")

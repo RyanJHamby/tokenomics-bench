@@ -94,3 +94,13 @@ def test_chart_picks_cheapest_feasible_open_cell_and_labels_synthetic(tmp_path):
     info = frontier_chart(rows, str(tmp_path / "f.png"), 2.0, 0.1)
     assert info["cheapest_feasible"] == "fast@q8"  # closed-loop 9000 tok/s cell is ignored
     assert (tmp_path / "f.png").stat().st_size > 1000
+
+
+def test_load_cells_skips_capacity_artifacts_written_next_to_cells(tmp_path):
+    """Regression: the runner writes capacity__*.json and capacity.json into the cell dir;
+    load_cells used to reject them as an unsupported schema and crash on real pilot output."""
+    (tmp_path / "a__q4__r0.json").write_text(json.dumps(_cell("v", {"mode": "open", "qps": 4})))
+    (tmp_path / "capacity__v__r0.json").write_text(json.dumps({"capacity": 7.5, "probes": []}))
+    (tmp_path / "capacity.json").write_text(json.dumps({"v": 7.5}))
+    (tmp_path / "manifest.json").write_text("{}")
+    assert len(load_cells(tmp_path)) == 1
