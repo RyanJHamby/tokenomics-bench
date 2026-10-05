@@ -45,6 +45,15 @@ After the pilot, compare `required_repeats` to the plan. If the budget cannot af
 a margin needs, **widen** that margin (documented in the journal) rather than shrinking repeats
 below 3 or narrowing a margin later. B2 (the core finding) comes first for that reason.
 
+## After all blocks: the pre-registered analysis (mechanical)
+```
+python -m tokbench.analyze --b1 results/raw/<S>-b1 --b2 results/raw/<S>-b2 --b3a-fp8 results/raw/<S>-b3a-fp8 \
+  --b3b results/raw/<S>-b3b --b4 results/raw/<S>-b4 --gsm8k-dir results/gates/<S> --out results/analysis.json
+```
+It applies the frozen P1-P6 procedure, lists excluded cells, and checks the model's predictions. It
+makes no choices the pre-registration did not already make; omit an input and that test reports
+`insufficient_data` instead of guessing.
+
 ## After each block
 - `python -m tokbench.report results/raw/<dir> --png results/<dir>/frontier.png`
 - Commit raw results in a **signed commit before analysing them**; `pow log` what happened.
