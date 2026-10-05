@@ -1,42 +1,68 @@
+import math
+
 import pytest
 
 from tokbench.analysis import (
     Config,
-    bootstrap_ci,
     cheapest_feasible,
-    decide,
+    holm,
     joules_per_token,
+    paired_log_ratio,
     pareto,
+    required_repeats,
+    t_ppf,
     usd_per_mtok,
-    welch_p_value,
 )
 
-A = [100.474, 106.25, 95.343, 104.962, 98.704]
-B = [105.646, 125.098, 109.418, 107.614]
+
+def test_t_quantiles_match_scipy_reference():
+    # scipy.stats.t.ppf(0.975, df)
+    for df, ref in ((2, 4.302653), (4, 2.776445), (9, 2.262157)):
+        assert t_ppf(0.975, df) == pytest.approx(ref, rel=1e-5)
 
 
-def test_welch_matches_scipy_reference():
-    # scipy.stats.ttest_ind(A, B, equal_var=False).pvalue == 0.08809802235816977
-    assert welch_p_value(A, B) == pytest.approx(0.08809802235816977, rel=1e-6)
+A = [1.10, 1.18, 1.05, 1.12]
+B = [1.00, 1.02, 0.98, 1.01]
 
 
-def test_decision_requires_effect_and_significance():
-    # ~8% slower but p ~ 0.09: not distinguishable under alpha=0.05
-    assert decide(A, B).verdict == "not_distinguishable"
-    # tiny effect, hugely significant: still rejected by the min-effect floor
-    base = [100.0, 100.1, 99.9, 100.0, 100.05]
-    cand = [101.0, 101.1, 100.9, 101.0, 101.05]
-    assert decide(base, cand).verdict == "not_distinguishable"
-    # big effect, tight variance: confirmed
-    cand = [120.0, 120.1, 119.9, 120.0, 120.05]
-    r = decide(base, cand)
-    assert r.verdict == "confirmed" and r.rel_change == pytest.approx(0.2, rel=0.01)
+def test_paired_log_ratio_matches_scipy_reference_interval_and_p():
+    # numpy/scipy: mean log ratio 0.103348, 95% CI [0.052699, 0.153998], p = 0.0074151
+    r = paired_log_ratio(A, B, margin=0.05)
+    assert r.n == 4 and r.mean_log_ratio == pytest.approx(0.10334830, abs=1e-7)
+    assert math.log(r.ci_lo) == pytest.approx(0.05269860, abs=1e-6)
+    assert math.log(r.ci_hi) == pytest.approx(0.15399800, abs=1e-6)
+    assert r.p_value == pytest.approx(0.00741514, rel=1e-4)
 
 
-def test_bootstrap_ci_brackets_mean_and_is_seeded():
-    lo, hi = bootstrap_ci(A)
-    assert lo < sum(A) / len(A) < hi
-    assert bootstrap_ci(A) == (lo, hi)
+def test_verdicts_superior_equivalent_inconclusive():
+    tight = [1.0, 1.001, 0.999, 1.0]
+    assert paired_log_ratio([x * 1.3 for x in tight], tight).verdict == "superior_higher"
+    assert paired_log_ratio([x * 0.7 for x in tight], tight).verdict == "superior_lower"
+    assert paired_log_ratio([x * 1.01 for x in tight], tight, margin=0.05).verdict == "equivalent"
+    noisy_a, noisy_b = [1.0, 1.4, 0.8, 1.2], [1.0, 1.0, 1.0, 1.0]
+    assert paired_log_ratio(noisy_a, noisy_b).verdict == "inconclusive"  # wide CI: say so
+
+
+def test_paired_rejects_unpaired_or_invalid_input():
+    for a, b in (([1, 2], [1]), ([1], [1]), ([1, -2], [1, 2]), ([1, float("nan")], [1, 2])):
+        with pytest.raises(ValueError):
+            paired_log_ratio(a, b)
+
+
+def test_holm_stepdown():
+    assert holm([0.001, 0.04, 0.03]) == [True, False, False]  # 0.03 > 0.05/2: stop
+    assert holm([0.001, 0.01, 0.02]) == [True, True, True]
+    assert holm([0.2]) == [False]
+
+
+def test_required_repeats_matches_exact_power_calculation():
+    # statsmodels TTestPower (exact noncentral t): sd .05/delta .05 -> 9.94, .10/.05 -> 33.4,
+    # .03/.10 -> 2.97. Normal-approx with t critical must land within one launch.
+    assert abs(required_repeats(0.05, 0.05) - 10) <= 1
+    assert abs(required_repeats(0.10, 0.05) - 34) <= 1
+    assert required_repeats(0.03, 0.10) == 3
+    with pytest.raises(ValueError):
+        required_repeats(0, 0.1)
 
 
 def test_cost_and_energy_math():

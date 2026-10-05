@@ -23,6 +23,41 @@ def percentile(values: Sequence[float], q: float) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
+def _binom_ppf(p: float, n: int, q: float) -> int:
+    """Smallest k with P(Bin(n, q) <= k) >= p."""
+    if q <= 0.0:
+        return 0
+    if q >= 1.0:
+        return n
+    lq, l1q = math.log(q), math.log1p(-q)
+    cdf = 0.0
+    for k in range(n + 1):
+        cdf += math.exp(
+            math.lgamma(n + 1)
+            - math.lgamma(k + 1)
+            - math.lgamma(n - k + 1)
+            + k * lq
+            + (n - k) * l1q
+        )
+        if cdf >= p:
+            return k
+    return n
+
+
+def percentile_ci(values: Sequence[float], q: float, conf: float = 0.95) -> tuple[float, float]:
+    """Distribution-free CI for the q-th percentile (q in [0,100]) from order statistics
+    (binomial ranks). With few samples the interval is wide or clipped to the extremes,
+    which is the honest answer: p99 from 200 requests is almost the maximum."""
+    n = len(values)
+    if n == 0:
+        return float("nan"), float("nan")
+    xs = sorted(values)
+    qq = q / 100.0
+    lo = max(1, _binom_ppf((1 - conf) / 2, n, qq))
+    hi = min(n, _binom_ppf(1 - (1 - conf) / 2, n, qq))
+    return xs[lo - 1], xs[hi - 1]
+
+
 def steady_window(recs: Sequence[RequestRecord]) -> float:
     """Seconds from first kept send to last kept completion. Tokens and time use the
     same requests, so throughput is not biased by discarded warmup or the drain."""
@@ -128,6 +163,7 @@ def summarize_window(
         "slo_attainment": sum(good(r) for r in ok) / n if n else float("nan"),
         "ttft_p50": percentile(ttft, 50),
         "ttft_p99": percentile(ttft, 99),
+        "ttft_p99_ci": percentile_ci(ttft, 99),
         "tpot_p50": percentile(tpot, 50),
         "tpot_p99": percentile(tpot, 99),
         "itl_p99": percentile(itl, 99),

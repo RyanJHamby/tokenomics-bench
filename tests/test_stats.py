@@ -95,3 +95,20 @@ def test_window_counts_unfinished_as_failures_and_slo_misses():
     s = summarize_window([_w(10, 10.1, 10.5), inc], 10.0, 20.0, 1.0, 1.0)
     assert s["n_failed"] == 1 and s["errors"] == ["incomplete"]
     assert s["slo_attainment"] == 0.5
+
+
+def test_percentile_ci_matches_scipy_binomial_ranks():
+    from tokbench.loadgen.stats import percentile_ci
+
+    xs = list(range(1, 1001))  # value == rank
+    lo, hi = percentile_ci(xs, 99)  # scipy.stats.binom.ppf(.025/.975, 1000, .99) = 983, 996
+    assert (lo, hi) == (983, 996)
+
+
+def test_percentile_ci_is_wide_for_small_n_and_clips_to_the_max():
+    from tokbench.loadgen.stats import percentile_ci
+
+    xs = [float(i) for i in range(1, 201)]
+    lo, hi = percentile_ci(xs, 99)
+    assert hi == 200.0 and lo < 199  # p99 from 200 samples is essentially the maximum
+    assert math.isnan(percentile_ci([], 99)[0])
