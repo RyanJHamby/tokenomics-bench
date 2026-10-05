@@ -20,3 +20,7 @@ Telemetry + analysis done on synthetic data (14 tests). Welch p-value cross-chec
 ## 2026-10-04 19:12 EDT (at aacdbc7)
 
 Runner + report built; make demo (mock server, fake GPU) runs end to end in ~2.5 min and draws the frontier chart watermarked SYNTHETIC. Demo output goes to gitignored demo_out/, not results/, so it can't be mistaken for a measurement. TODO before GPU spend: quality gates (greedy equivalence, eval subset), real B1-B7 configs, freeze PREREG.
+
+## 2026-10-04 20:22 EDT (at fa28d67)
+
+Wrote B1-B5 configs + B7 template, quality gates, overload derivation. Dry-run estimate at an ASSUMED $1.50/hr: ~7.8 GPU-h for B1-B5 (higher than the 3-5h I first guessed, driven by 3 repeats and per-variant restarts). Real price must come from live rates. Bug caught: AWQ variant sent the base model name; fixed. Not yet done: GSM8K data file, vLLM version pin, PREREG freeze.
