@@ -68,6 +68,26 @@ done
 echo "$help" | grep -q -- "--no-enable-prefix-caching" && ok "flag --no-enable-prefix-caching" \
   || bad "--no-enable-prefix-caching missing: B2 'off' arm would silently stay on"
 
+# Every CUDA-graph mode named in the configs must be accepted by this vLLM build.
+python - <<'PY' || fail=1
+import glob, json, re, sys
+try:
+    from vllm.config import CompilationConfig
+except Exception as e:
+    print("FAIL  cannot import vllm.config:", type(e).__name__); sys.exit(1)
+modes = set()
+for f in glob.glob("configs/*.yaml"):
+    modes |= set(re.findall(r'"cudagraph_mode": "(\w+)"', open(f).read()))
+bad = []
+for m in sorted(modes):
+    try:
+        CompilationConfig(**json.loads(json.dumps({"cudagraph_mode": m})))
+    except Exception as e:
+        bad.append((m, type(e).__name__))
+print("ok    cudagraph modes accepted: " + ", ".join(sorted(modes)) if not bad else f"FAIL  rejected modes: {bad}")
+sys.exit(1 if bad else 0)
+PY
+
 [ -n "${HF_TOKEN:-}" ] && ok "HF_TOKEN set" || bad "HF_TOKEN not set"
 python - <<'PY' || fail=1
 import os, sys
