@@ -24,3 +24,7 @@ Runner + report built; make demo (mock server, fake GPU) runs end to end in ~2.5
 ## 2026-10-04 20:22 EDT (at fa28d67)
 
 Wrote B1-B5 configs + B7 template, quality gates, overload derivation. Dry-run estimate at an ASSUMED $1.50/hr: ~7.8 GPU-h for B1-B5 (higher than the 3-5h I first guessed, driven by 3 repeats and per-variant restarts). Real price must come from live rates. Bug caught: AWQ variant sent the base model name; fixed. Not yet done: GSM8K data file, vLLM version pin, PREREG freeze.
+
+## 2026-10-04 20:27 EDT (at 5bab543)
+
+Froze PREREG (tag prereg-v1) after amending gates: cache on/off judged against same-config noise floor (GPU greedy isn't bit-reproducible); quant claimed lossless only within 2 SE on GSM8K-200. Pinned vllm==0.30.0 (latest on PyPI today); my flag check was against the local fork, so preflight re-verifies on the pod. Scripts are syntax-checked only, never run against vLLM.
