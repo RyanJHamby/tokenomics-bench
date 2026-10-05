@@ -40,7 +40,7 @@ for b in "${blocks[@]}"; do
         && git diff --quiet -- configs/b2_power_clock.yaml \
         || { echo "configs/b2_power_clock.yaml is missing, untracked or modified: run b2gen and commit it first"; exit 2; }
       run b2 configs/b2_power_clock.yaml ;;
-    b3a) run b3a configs/b3a_quant_capacity.yaml ;;
+    b3a) run b3a-fp8 configs/b3a_fp8_capacity.yaml; run b3a-extra configs/b3a_extra_capacity.yaml ;;
     b3b)
       G=results/gates/$STAMP; mkdir -p "$G"
       for v in fp16-default fp8 fp8-kv8 awq-int4; do

@@ -1,0 +1,23 @@
+# B3a-extra (EXPLORATORY, no significance claims): capacity of fp8-kv8 and AWQ-INT4, 1 launch each. AWQ is a third-party
+# checkpoint: a model change AND a precision change; say so when quoting.
+name: b3a_extra_capacity
+model: meta-llama/Llama-3.1-8B-Instruct
+seed: 0
+startup_seconds: 240
+soak_s: 60
+idle_s: 10
+slo: {ttft_s: 1.0, tpot_s: 0.05}
+capacity_file: results/capacity/capacity.json
+block: B3a-extra
+workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
+repeats: 1
+warmup_s: 30
+measure_s: 60
+variants:
+- name: fp8-kv8
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8, --kv-cache-dtype, fp8]
+- name: awq-int4
+  model: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, awq_marlin]
+loads:
+- {mode: capacity_search, qps_lo: 1, qps_hi: 64, resolution: 0.08}

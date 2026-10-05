@@ -54,7 +54,13 @@ def test_generated_b2_is_valid_and_arms_are_separate(tmp_path):
 
 def test_total_planned_gpu_hours_fit_the_budget_with_headroom():
     total = 0.0
-    for f in ("b1_capacity_pilot", "b3a_quant_capacity", "b3b_quant_fixed_load", "b4_graph_modes"):
+    for f in (
+        "b1_capacity_pilot",
+        "b3a_fp8_capacity",
+        "b3a_extra_capacity",
+        "b3b_quant_fixed_load",
+        "b4_graph_modes",
+    ):
         cfg = resolve_loads(load_config(f"configs/{f}.yaml"), {"fp16-default": 10.0})
         total += estimate_cost(cfg, 1.0)["gpu_hours"]
     total += 5.1  # b2 with 8 arms, 3 launches each

@@ -11,7 +11,7 @@ demo:  ## synthetic end-to-end run on the mock server; output is NOT a result
 		--usd-per-hr 1.0 --out demo_out --quiet-server
 	python -m tokbench.report demo_out --png demo_out/frontier.png --ttft-slo 0.5
 
-CONFIGS = b1_capacity_pilot b2_power_clock.template b3a_quant_capacity b3b_quant_fixed_load b4_graph_modes
+CONFIGS = b1_capacity_pilot b2_power_clock.template b3a_fp8_capacity b3a_extra_capacity b3b_quant_fixed_load b4_graph_modes
 
 estimate:  ## GPU-hours and dollars per config; PRICE=<live usd/hr>; capacity is a stand-in here
 	@for f in $(CONFIGS); do \

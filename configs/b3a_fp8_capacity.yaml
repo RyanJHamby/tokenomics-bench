@@ -1,0 +1,20 @@
+# B3a (primary, P4): SLO capacity of FP8 weights, 3 independent launches so it pairs with the 3 FP16 capacities from B1
+# (pre-registered rule: primary comparisons never run with fewer than 3 launches). FP16 args == B1's fp16-default.
+name: b3a_fp8_capacity
+model: meta-llama/Llama-3.1-8B-Instruct
+seed: 0
+startup_seconds: 240
+soak_s: 60
+idle_s: 10
+slo: {ttft_s: 1.0, tpot_s: 0.05}
+capacity_file: results/capacity/capacity.json
+block: B3a
+workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
+repeats: 3
+warmup_s: 30
+measure_s: 60
+variants:
+- name: fp8
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8]
+loads:
+- {mode: capacity_search, qps_lo: 1, qps_hi: 64, resolution: 0.08}
