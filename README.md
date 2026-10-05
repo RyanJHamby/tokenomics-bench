@@ -10,7 +10,7 @@ reduces energy per token where a power cap does not (decode on a small model may
 the cap), and whether the energy-optimal clock differs from the cost-optimal one.
 
 ## What makes this more than a sweep
-- **Pre-registered** ([`PREREG-v2`](docs/PREREG-v2.md)) before any GPU run, with numeric
+- **Pre-registered** ([`PREREG-v2`](docs/PREREG-v2.md), amended pre-run in [`PREREG-v2-amendments`](docs/PREREG-v2-amendments.md)) before any GPU run, with numeric
   hypotheses, a paired-launch statistical procedure, and an "inconclusive is reported as
   inconclusive" rule. v1 was superseded after adversarial review; v1 is kept at its tag.
 - **Predictions first** ([`PREDICTIONS`](docs/PREDICTIONS.md)): roofline-model intervals are
