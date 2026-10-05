@@ -28,3 +28,7 @@ Wrote B1-B5 configs + B7 template, quality gates, overload derivation. Dry-run e
 ## 2026-10-04 20:27 EDT (at 5bab543)
 
 Froze PREREG (tag prereg-v1) after amending gates: cache on/off judged against same-config noise floor (GPU greedy isn't bit-reproducible); quant claimed lossless only within 2 SE on GSM8K-200. Pinned vllm==0.30.0 (latest on PyPI today); my flag check was against the local fork, so preflight re-verifies on the pod. Scripts are syntax-checked only, never run against vLLM.
+
+## 2026-10-04 22:08 EDT (at 6b52080)
+
+Tier 0 fixes landed after four adversarial reviews (methodology, code-break, frontier scout, hardware/power). Verified myself: prompts tokenized ~2.5x longer than labeled; prompt i was identical across loads (prefix-cache contamination). Fixes: exact-token prompts via /v1/completions salted per load+repeat; strict request validity (truncation/error events/short = failure); goodput + ITL; steady-window throughput and energy in ONE window; NVML energy counter preferred; throttle mask fixed; sampler death is loud; server lifecycle (port check, SIGKILL escalation, GPU-memory wait, SIGTERM/SIGHUP); power cap restores to DEFAULT limit and validates min/max; resume + atomic writes; fail-fast on dead runs; selection logic (eligible cells, unique names, NaN-safe). 74 tests. Budget: hard cap $60 total across all attempts (user decision 2026-10-04); guard in runner, ledger in budget/. Still unverified: everything on real vLLM/NVML. Next: prereg-v2 (supersedes v1; v1 tag kept), scripts, frontier experiment design.
