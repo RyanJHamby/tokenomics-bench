@@ -2,7 +2,7 @@ import pytest
 import yaml
 
 from tokbench.config import estimate_cost, load_config, plan
-from tokbench.workloads import make_prompt_fn
+from tokbench.workloads import make_prompt_fn, salt_for
 
 
 def _write(tmp_path, **over):
@@ -55,12 +55,30 @@ def test_invalid_configs_rejected(tmp_path, over):
         load_config(_write(tmp_path, **over))
 
 
-def test_prefix_share_shapes_prompts():
+def test_prompts_are_exact_length_and_prefix_shared():
     f = make_prompt_fn(100, 8, prefix_share=0.9)
     a, b = f(0), f(1)
-    assert a["messages"][0] == b["messages"][0]  # identical shared system prompt
-    assert len(a["messages"][0]["content"].split()) == 90
-    assert a["messages"][1]["content"] != b["messages"][1]["content"]
+    assert len(a["prompt"]) == len(b["prompt"]) == 100  # exact token count, no tokenizer
+    assert a["prompt"][:90] == b["prompt"][:90]  # identical shared prefix
+    assert a["prompt"][90:] != b["prompt"][90:]
     assert f(0) == make_prompt_fn(100, 8, prefix_share=0.9)(0)  # deterministic
-    assert a["temperature"] == 0 and a["max_tokens"] == 8
-    assert make_prompt_fn(100, 8, 0.0)(0)["messages"][0]["content"] == ""
+    assert a["temperature"] == 0 and a["max_tokens"] == 8 and a["ignore_eos"] is True
+    assert make_prompt_fn(100, 8, 0.0)(0)["prompt"] != make_prompt_fn(100, 8, 0.0)(1)["prompt"]
+
+
+def test_salt_makes_loads_and_repeats_disjoint_so_prefix_cache_starts_cold():
+    """Regression: unsalted prompts replayed across loads hit the KV prefix cache."""
+    seen = set()
+    for repeat in range(3):
+        for load_idx in range(4):
+            f = make_prompt_fn(64, 4, 0.5, seed=0, salt=salt_for(repeat, load_idx))
+            body = f(0)["prompt"]
+            assert tuple(body[:32]) not in seen  # shared prefix differs per (repeat, load)
+            assert tuple(body) not in seen
+            seen.add(tuple(body[:32]))
+    assert len({salt_for(r, i) for r in range(10) for i in range(20)}) == 200
+
+
+def test_prefix_share_out_of_range_rejected():
+    with pytest.raises(ValueError):
+        make_prompt_fn(10, 1, prefix_share=1.5)

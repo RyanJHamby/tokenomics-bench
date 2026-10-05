@@ -22,7 +22,8 @@ _NUM = re.compile(r"-?\d[\d,]*\.?\d*")
 async def _complete(session: aiohttp.ClientSession, url: str, body: dict) -> str:
     async with session.post(url, json={**body, "stream": False}) as r:
         r.raise_for_status()
-        return (await r.json())["choices"][0]["message"]["content"]
+        choice = (await r.json())["choices"][0]
+        return choice["message"]["content"] if "message" in choice else choice["text"]
 
 
 @dataclass

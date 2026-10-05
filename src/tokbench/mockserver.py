@@ -3,8 +3,9 @@
 Used to validate the load generator and run the synthetic demo without a GPU.
 Model: prefill takes `prefill_s_per_token * prompt_tokens`, then each output token
 takes `tpot_s`. At most `slots` requests are served concurrently; the rest queue,
-which creates a latency knee whose position is known analytically. Also serves
-/health and a vLLM-shaped /metrics so the scraper path is exercised.
+which creates a latency knee whose position is known analytically. Serves
+/v1/completions (token-id or text prompts) and /v1/chat/completions, plus /health and a
+vLLM-shaped /metrics so the scraper path is exercised.
 """
 
 from __future__ import annotations
@@ -12,25 +13,41 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import zlib
 
 from aiohttp import web
 
 
 def make_app(
-    prefill_s_per_token: float = 0.0001, tpot_s: float = 0.01, slots: int = 8, salt: str = ""
+    prefill_s_per_token: float = 0.0001,
+    tpot_s: float = 0.01,
+    slots: int = 8,
+    salt: str = "",
+    fail_after: int | None = None,
 ) -> web.Application:
+    """`fail_after`: emit that many tokens then drop the stream (fault injection)."""
     sem = asyncio.Semaphore(slots)
-    state = {"running": 0, "waiting": 0, "slots": slots}
+    state = {"running": 0, "waiting": 0}
 
-    async def chat(request: web.Request) -> web.StreamResponse:
+    def prompt_info(body: dict) -> tuple[int, str]:
+        if "messages" in body:
+            text = " ".join(m.get("content", "") for m in body["messages"])
+            return max(1, len(text.split())), text
+        p = body.get("prompt", "")
+        if isinstance(p, list):
+            return max(1, len(p)), " ".join(map(str, p[-4:]))
+        return max(1, len(str(p).split())), str(p)
+
+    async def generate(request: web.Request) -> web.StreamResponse:
+        chat = request.path.endswith("chat/completions")
         body = await request.json()
-        text = " ".join(m.get("content", "") for m in body.get("messages", []))
-        prompt_tokens = max(1, len(text.split()))
+        prompt_tokens, text = prompt_info(body)
         n_out = int(body.get("max_tokens", 16))
         if not body.get("stream"):  # deterministic function of the prompt (+ salt)
-            h = abs(hash((text, salt))) % 1000 if salt else 0
-            content = " ".join(f"{text.split()[-1] if text else ''}{i}{h}" for i in range(n_out))
-            return web.json_response({"choices": [{"message": {"content": content}}]})
+            h = zlib.crc32(f"{text}|{salt}".encode()) % 1000 if salt else 0
+            content = " ".join(f"{text[-6:]}{i}{h}" for i in range(n_out))
+            choice = {"message": {"content": content}} if chat else {"text": content}
+            return web.json_response({"choices": [choice]})
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
         state["waiting"] += 1
@@ -40,9 +57,12 @@ def make_app(
             try:
                 await asyncio.sleep(prefill_s_per_token * prompt_tokens)
                 for i in range(n_out):
+                    if fail_after is not None and i >= fail_after:
+                        return resp  # drop mid-stream: no usage, no [DONE]
                     await asyncio.sleep(tpot_s)
-                    evt = {"choices": [{"delta": {"content": f"t{i} "}}]}
-                    await resp.write(f"data: {json.dumps(evt)}\n\n".encode())
+                    piece = f"t{i} "
+                    choice = {"delta": {"content": piece}} if chat else {"text": piece}
+                    await resp.write(f"data: {json.dumps({'choices': [choice]})}\n\n".encode())
             finally:
                 state["running"] -= 1
         usage = {
@@ -66,7 +86,8 @@ def make_app(
         )
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", chat)
+    app.router.add_post("/v1/chat/completions", generate)
+    app.router.add_post("/v1/completions", generate)
     app.router.add_get("/health", health)
     app.router.add_get("/metrics", metrics)
     return app
@@ -78,8 +99,10 @@ def main() -> None:
     ap.add_argument("--tpot", type=float, default=0.01)
     ap.add_argument("--prefill", type=float, default=0.0001)
     ap.add_argument("--slots", type=int, default=8)
+    ap.add_argument("--fail-after", type=int, default=None, help="drop streams after N tokens")
     a = ap.parse_args()
-    web.run_app(make_app(a.prefill, a.tpot, a.slots), port=a.port, print=None)
+    app = make_app(a.prefill, a.tpot, a.slots, fail_after=a.fail_after)
+    web.run_app(app, port=a.port, print=None)
 
 
 if __name__ == "__main__":
