@@ -1,10 +1,7 @@
-# Method and threats to validity
+# Method
 
-_Skeleton. Filled in as the harness is built._
-
-## Threats to validity (initial list)
-- Cold vs warm prefix cache and GPU boost-clock variance.
-- One GPU model and one model size; results may not transfer.
-- Synthetic length distributions may differ from production traffic.
-- Energy is GPU board power from NVML only; host and cooling power excluded.
-- On-demand $/hr varies by provider and day; price is recorded per run.
+The method, hypotheses, statistical procedure, validity rules and threats to validity are
+specified in [`PREREG-v2.md`](PREREG-v2.md) (frozen before any GPU run; supersedes
+[`PREREG.md`](PREREG.md)). Numeric model predictions are in [`PREDICTIONS.md`](PREDICTIONS.md).
+Operational steps are in [`RUNBOOK.md`](RUNBOOK.md). This file intentionally holds no
+duplicate of those, so they cannot drift apart.

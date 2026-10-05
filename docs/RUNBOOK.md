@@ -1,53 +1,55 @@
-# Runbook: real-hardware runs
+# Runbook: real-hardware runs (prereg-v2)
 
-Nothing here has been run on a GPU yet. Treat the first pass as a smoke test and journal
-every surprise (`pow log`).
+Nothing here has run on a GPU yet. The first pass is partly a smoke test; journal every
+surprise (`pow log`), including failures. Hard spend cap: **$60 across all attempts**
+(`budget/budget.yaml`).
 
 ## Before renting
-1. `make estimate PRICE=<live on-demand $/hr>`. Prices move daily; use the provider's live
-   rate. As of the dry run, B1-B5 are about 7.8 GPU-hours plus about 1 for B7.
-2. Pick a GPU with **FP8 support** (compute capability >= 8.9: L4, L40S, H100) and a bare
-   pod where **root can run `nvidia-smi -pl`**. Serverless platforms usually block this, so
-   B5 (power caps) needs a pod. Pick on-demand, not interruptible.
-3. B5 caps in `configs/b5_power_caps.yaml` assume a 350 W limit (L40S). Rescale to
-   100/85/70/55% of the rented GPU's `power.default_limit` if it differs, and note the
-   change in the journal before running.
-4. Have `HF_TOKEN` with access to meta-llama/Llama-3.1-8B-Instruct. Budget a cap with the
-   provider so a hung run can't bill overnight.
+1. Pick a pod with **root and `nvidia-smi -pl`/`-lgc` allowed** (many containers forbid both;
+   the preflight probes this, but cheaper to ask first). Full-VM providers are likelier than
+   serverless. On-demand, not interruptible. Primary GPU: L40S (FP8-capable, 350 W).
+2. Check the **live** $/hr. `make estimate PRICE=<live rate>` prints GPU-hours and dollars per
+   block (the B2 template shows 1 of 8 arms: multiply its figure by 8; planned total is about
+   13.7 GPU-hours before retries). Compare to remaining budget: `python -m tokbench.budget status`.
+3. **Set a spending limit on the provider side.** The in-repo ledger is a guard, not
+   enforcement: it cannot see the provider's bill.
+4. If the GPU is not an L40S, regenerate `docs/PREDICTIONS.md` for it
+   (`python -m tokbench.model --hw <name> --write docs/PREDICTIONS.md`), verify the hardware
+   figures against the vendor datasheet, and commit **before** the first measured run.
+5. Have `HF_TOKEN` with Llama 3.1 access, and `pow` installed on the pod.
 
-## On the pod
+## On the pod (inside tmux)
 ```
 git clone https://github.com/RyanJHamby/tokenomics-bench && cd tokenomics-bench
 export HF_TOKEN=...
 scripts/setup_pod.sh
-scripts/preflight.sh            # must print PREFLIGHT PASSED
+scripts/preflight.sh        # must print PREFLIGHT PASSED
 ```
-Preflight checks: pinned vLLM version, the flags used by the configs (including
-`--no-enable-prefix-caching`, without which the B2 "off" arm could silently stay on),
-writable power cap, model access, FP8 support. If a flag is missing, fix the config and
-record the deviation; do not run around it.
+Preflight checks, among others: pinned vLLM, driver >= 580, NVML energy counter, that `-pl` and
+`-lgc` are writable (before you pay for a cap sweep), no stale cap, accepted CUDA-graph modes,
+every flag the configs use, vCPU count, and a checksummed GSM8K file. If a check fails, fix it or
+record a deviation; do not work around it silently.
 
-## Order of operations
-Run a smoke test first (about 10 minutes): `PRICE=... scripts/run_all.sh b4` is the
-cheapest block. Inspect one cell JSON by hand: are `server_metrics` populated, is
-`mean_power_w` plausible, is `throttle_seen` false, are there failed requests?
-
-Then, per block, in dependency order:
+## Order of operations (dependency order; stop when money runs short)
 ```
-PRICE=<live rate> scripts/run_all.sh b1        # knee; B7 depends on it
-PRICE=<live rate> scripts/run_all.sh b2 b3 b4 b5
-PRICE=<live rate> scripts/run_all.sh b7
+PRICE=<live> scripts/run_all.sh b1                     # pilot: capacity, batch-1, saturation, variance
+python -m tokbench.pilot results/raw/<STAMP>-b1        # launches needed per margin
+B1_DIR=results/raw/<STAMP>-b1 PRICE=<live> scripts/run_all.sh b2gen
+git add configs/b2_power_clock.yaml && git commit -S -m "B2 arms from pilot"   # BEFORE b2 runs
+PRICE=<live> scripts/run_all.sh b2 b3a b3b b4
 ```
-Each step is wrapped in `pow run`, which saves output and hardware info under `results/`.
-Raw per-cell JSON lands in `results/raw/<stamp>-<block>/`. Quality gates run before their
-block's timings; a failed gate means that block's speedups must not be claimed.
+After the pilot, compare `required_repeats` to the plan. If the budget cannot afford the repeats
+a margin needs, **widen** that margin (documented in the journal) rather than shrinking repeats
+below 3 or narrowing a margin later. B2 (the core finding) comes first for that reason.
 
 ## After each block
 - `python -m tokbench.report results/raw/<dir> --png results/<dir>/frontier.png`
-- Commit raw results in a signed commit before analysing them. `pow log` what happened,
-  including failures and anything that contradicts the pre-registration.
-- Stop the pod. A forgotten pod is the biggest cost risk.
+- Commit raw results in a **signed commit before analysing them**; `pow log` what happened.
+- Stop the pod. Record the invoice: `python -m tokbench.budget add --provider ... --gpu ...
+  --usd-per-hr ... --hours ... --session <name>`. A forgotten pod is the biggest cost risk.
+- If a run is interrupted, re-run with the same `STAMP`: finished cells are skipped.
 
 ## Deviations
-The pre-registration is tagged `prereg-v1` before the first run. Any change after that goes
-in the journal as a dated deviation; docs/PREREG.md is not edited silently.
+`prereg-v2` is tagged before the first run. Any change afterwards goes in the journal as a dated
+deviation; `PREREG-v2.md` is not edited silently. Excluded cells (see its validity rules) are
+listed in the write-up, never dropped quietly.

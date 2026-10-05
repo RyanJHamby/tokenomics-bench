@@ -1,3 +1,6 @@
+> **SUPERSEDED by [PREREG-v2.md](PREREG-v2.md).** This file is kept as the record of v1 (tag `prereg-v1`).
+> It was replaced before any GPU run after adversarial review; see the journal.
+
 # Pre-registration
 
 Committed before any GPU run. Changes after the first GPU run are recorded in
