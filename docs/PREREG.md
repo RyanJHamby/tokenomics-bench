@@ -31,9 +31,15 @@ is primary for latency claims (avoids coordinated omission).
 interleaved across repeats. Percentiles reported with bootstrap 95% CIs.
 
 ## Gates (before timing is trusted)
-- Prefix cache on/off: greedy outputs identical on a fixed prompt set.
-- Quantization: quality delta vs FP16 on a fixed eval subset, reported next to
-  any speedup.
+- Prefix cache on/off: greedy completions for 50 fixed prompts, collected
+  sequentially. Gate passes if the number of on-vs-off mismatches is no greater
+  than the number of mismatches between two runs of the SAME config (noise
+  floor; GPU greedy decoding is not bit-reproducible). Amended before any GPU
+  run: the first draft required exact identity, which could fail on noise.
+- Quantization: GSM8K accuracy (200 fixed items, seeded subset) vs FP16 with
+  standard error, reported next to any speedup. A throughput gain is only
+  called "no quality loss" if the accuracy difference is within 2 standard
+  errors.
 
 ## Decision rule
 A difference is called real only if it exceeds a 5% minimum effect AND passes a
