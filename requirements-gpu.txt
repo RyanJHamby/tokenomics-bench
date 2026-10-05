@@ -1,0 +1,3 @@
+# Pinned for the real runs. Verify with scripts/preflight.sh on the pod before spending.
+vllm==0.30.0
+nvidia-ml-py
