@@ -57,7 +57,9 @@ def aggregate(cells: list[dict]) -> list[dict]:
                 "n_failed": sum(c["summary"]["n_failed"] for c in cs),
                 "any_failures": any(c["summary"]["n_failed"] for c in cs),
                 "bad_throttle": any(c["power"]["bad_throttle_seen"] for c in cs),
-                "invalid": not all(c["workload_ok"] and c["sampler_ok"] for c in cs),
+                "invalid": not all(
+                    c["workload_ok"] and c["sampler_ok"] and c["client"]["client_ok"] for c in cs
+                ),
                 "gpu_usd_per_hr": cs[0]["gpu_usd_per_hr"],
                 "synthetic": any(c["synthetic"] for c in cs),
             }

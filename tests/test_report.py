@@ -36,6 +36,7 @@ def _cell(
         "energy": {"j_per_output_token": jpt},
         "power": {"bad_throttle_seen": False},
         "workload_ok": not invalid,
+        "client": {"client_ok": True},
         "sampler_ok": True,
         "gpu_usd_per_hr": usd,
         "synthetic": True,

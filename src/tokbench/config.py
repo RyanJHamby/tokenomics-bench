@@ -71,6 +71,7 @@ def load_config(path: str | Path) -> dict:
     cfg.setdefault("soak_concurrency", 32)
     cfg.setdefault("idle_s", 0.0)  # idle power baseline measured per launch
     cfg.setdefault("randomize_load_order", True)
+    cfg.setdefault("max_client_lag_ms", 10.0)  # p99 event-loop lag above this => cell invalid
     cfg.setdefault("startup_seconds", 180)
     return cfg
 
