@@ -362,11 +362,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true", help="print cost estimate and exit")
     ap.add_argument("--quiet-server", action="store_true")
+    ap.add_argument(
+        "--assume-capacity",
+        type=float,
+        help="dry-run only: stand-in capacity (qps) for rel loads when no capacity file exists yet",
+    )
     args = ap.parse_args(argv)
 
     out = Path(args.out)
     cfg = load_config(args.config)
-    cfg = resolve_loads(cfg, read_capacity(cfg.get("capacity_file")))
+    capacity = read_capacity(cfg.get("capacity_file"))
+    if capacity is None and args.dry_run and args.assume_capacity:
+        refs = {ld["ref"] for ld in cfg["loads"] if "ref" in ld}
+        capacity = dict.fromkeys(refs, args.assume_capacity)
+    cfg = resolve_loads(cfg, capacity)
     real = args.server == "vllm" and args.gpu == "nvml"
     launches = plan(cfg)
     pending = [la for la in launches if not launch_done(cfg, out, la)]

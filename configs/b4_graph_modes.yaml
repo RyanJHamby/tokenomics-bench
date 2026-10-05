@@ -1,0 +1,29 @@
+# B4: CUDA graph modes. 'graphs-none-compile-on' isolates graph capture from torch.compile (--enforce-eager disables both,
+# so 'eager' is a separate, coarser arm). Closed loop pins batch size; the metric is TPOT/ITL. Hypothesis: the graph
+# benefit is largest at low batch (launch-overhead-bound) and shrinks with batch.
+name: b4_graph_modes
+model: meta-llama/Llama-3.1-8B-Instruct
+seed: 0
+startup_seconds: 240
+soak_s: 60
+idle_s: 10
+slo: {ttft_s: 1.0, tpot_s: 0.05}
+capacity_file: results/capacity/capacity.json
+block: B4
+workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
+repeats: 3
+warmup_s: 20
+measure_s: 60
+variants:
+- name: graphs-none-compile-on
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "NONE"}']
+- name: graphs-piecewise
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "PIECEWISE"}']
+- name: graphs-full-and-piecewise
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "FULL_AND_PIECEWISE"}']
+- name: eager
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --enforce-eager]
+loads:
+- {mode: closed, concurrency: 1}
+- {mode: closed, concurrency: 8}
+- {mode: closed, concurrency: 64}

@@ -11,7 +11,10 @@ demo:  ## synthetic end-to-end run on the mock server; output is NOT a result
 		--usd-per-hr 1.0 --out demo_out --quiet-server
 	python -m tokbench.report demo_out --png demo_out/frontier.png --ttft-slo 0.5
 
-estimate:  ## GPU-hours and dollars for every real config; set PRICE=<usd/hr> from live rates
-	@for f in b1_knee b2_prefix_cache b3_quantization b4_cuda_graphs b5_power_caps; do \
-		printf "%-18s" $$f; python -m tokbench.runner configs/$$f.yaml --usd-per-hr $(PRICE) --out /dev/null --dry-run; \
+CONFIGS = b1_capacity_pilot b2_power_clock.template b3a_quant_capacity b3b_quant_fixed_load b4_graph_modes
+
+estimate:  ## GPU-hours and dollars per config; PRICE=<live usd/hr>; capacity is a stand-in here
+	@for f in $(CONFIGS); do \
+		printf "%-26s" $$f; python -m tokbench.runner configs/$$f.yaml --usd-per-hr $(PRICE) \
+			--out /dev/null --dry-run --assume-capacity 10 | head -1; \
 	done

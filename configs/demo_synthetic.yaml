@@ -2,17 +2,19 @@
 name: demo_synthetic
 block: DEMO
 model: mock
+seed: 0
 workload: {input_tokens: 64, output_tokens: 24, prefix_share: 0.0}
+slo: {ttft_s: 0.5, tpot_s: 0.1}
 variants:
-  - {name: baseline,  server_args: [--tpot, "0.012", --slots, "8"],  slots: 8}
-  - {name: faster,    server_args: [--tpot, "0.008", --slots, "8"],  slots: 8}
+  - {name: baseline, server_args: [--tpot, "0.012", --slots, "8"], slots: 8}
+  - {name: faster, server_args: [--tpot, "0.008", --slots, "8"], slots: 8}
   - {name: faster-cap, server_args: [--tpot, "0.009", --slots, "8"], slots: 8, power_cap_w: 200}
 loads:
   - {mode: open, qps: 4}
   - {mode: open, qps: 12}
   - {mode: open, qps: 24}
 repeats: 2
-n_requests: 60
-warmup: 5
+warmup_s: 1
+measure_s: 5
+drain_s: 5
 startup_seconds: 5
-est_seconds_per_load: 6

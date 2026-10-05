@@ -1,0 +1,30 @@
+# B3b: all variants at EQUAL absolute offered load (fractions of FP16's capacity) plus batch-1 and saturation, 3 launches
+# each, for paired per-launch comparisons. Quality: full 1319-item GSM8K, paired McNemar/TOST vs FP16 (tokbench.gates).
+name: b3b_quant_fixed_load
+model: meta-llama/Llama-3.1-8B-Instruct
+seed: 0
+startup_seconds: 240
+soak_s: 60
+idle_s: 10
+slo: {ttft_s: 1.0, tpot_s: 0.05}
+capacity_file: results/capacity/capacity.json
+block: B3b
+workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
+repeats: 3
+warmup_s: 30
+measure_s: 180
+variants:
+- name: fp16-default
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching]
+- name: fp8
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8]
+- name: fp8-kv8
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8, --kv-cache-dtype, fp8]
+- name: awq-int4
+  model: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, awq_marlin]
+loads:
+- {mode: closed, concurrency: 1}
+- {mode: open, rel: 0.5, ref: fp16-default}
+- {mode: open, rel: 0.9, ref: fp16-default}
+- {mode: closed, concurrency: 64}
