@@ -80,7 +80,8 @@ def test_resume_skips_finished_cells_without_launching_a_server(setup, capsys):
     mtimes = {c.name: c.stat().st_mtime_ns for c in out.glob("v__*.json")}
     capsys.readouterr()
     _run(p, out)
-    assert "[skip]" in capsys.readouterr().out and "[launch]" not in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert "0/1 server launches pending" in text and "[launch]" not in text
     assert {c.name: c.stat().st_mtime_ns for c in out.glob("v__*.json")} == mtimes
 
 
@@ -110,3 +111,55 @@ def test_write_atomic_replaces_whole_file(tmp_path):
     write_atomic(p, "a")
     write_atomic(p, "bb")
     assert p.read_text() == "bb" and not list(tmp_path.glob("*.tmp"))
+
+
+def test_real_runs_are_refused_when_estimate_exceeds_remaining_budget(setup, tmp_path, monkeypatch):
+    from tokbench import budget
+
+    make, out = setup
+    b = tmp_path / "b"
+    b.mkdir()
+    (b / "budget.yaml").write_text(yaml.safe_dump({"cap_usd": 1.0, "safety_margin": 0.2}))
+    monkeypatch.setattr(budget, "DIR", b)
+    big = {**CFG, "repeats": 5, "startup_seconds": 600}  # far more than $1 at $3/hr
+    rc = runner.main(
+        [
+            str(make(big)),
+            "--server",
+            "vllm",
+            "--gpu",
+            "nvml",
+            "--usd-per-hr",
+            "3",
+            "--out",
+            str(out),
+            "--dry-run",
+        ]
+    )
+    assert rc == 3 and not out.exists()  # refused before touching GPU or creating output
+    (b / "budget.yaml").write_text(yaml.safe_dump({"cap_usd": 500.0, "safety_margin": 0.2}))
+    assert (
+        runner.main(
+            [
+                str(make(big)),
+                "--server",
+                "vllm",
+                "--gpu",
+                "nvml",
+                "--usd-per-hr",
+                "3",
+                "--out",
+                str(out),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+
+def test_mock_runs_ignore_the_budget(setup, tmp_path, monkeypatch):
+    from tokbench import budget
+
+    make, out = setup
+    monkeypatch.setattr(budget, "DIR", tmp_path / "nonexistent")  # would raise if consulted
+    assert _run(make(), out, "--dry-run") == 0

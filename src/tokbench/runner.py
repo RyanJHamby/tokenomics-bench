@@ -20,7 +20,8 @@ import signal
 import time
 from pathlib import Path
 
-from .config import estimate_cost, load_config, load_label, plan
+from . import budget
+from .config import estimate_cost, load_config, load_label, per_launch_seconds, plan
 from .loadgen import run_closed_loop, run_open_loop, summarize
 from .manifest import manifest
 from .power import CapUnavailable, PowerCap
@@ -240,38 +241,83 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
-    est = estimate_cost(cfg, args.usd_per_hr)
+    out = Path(args.out)
+    real = args.server == "vllm" and args.gpu == "nvml"
+    launches = plan(cfg)
+    pending = [
+        la
+        for la in launches
+        if any(not cell_done(cell_path(out, la.variant, ld, la.repeat)) for ld in cfg["loads"])
+    ]
+    est = estimate_cost(cfg, args.usd_per_hr, launches=len(pending))
     print(
-        f"[plan] {est['launches']} server launches, ~{est['gpu_hours']:.2f} GPU-h, "
-        f"~${est['usd']:.2f}"
+        f"[plan] {len(pending)}/{len(launches)} server launches pending, "
+        f"~{est['gpu_hours']:.2f} GPU-h, ~${est['usd']:.2f}"
     )
+    if real:
+        try:
+            info = budget.check(est["usd"])
+        except budget.BudgetExceeded as e:
+            print(f"[budget] REFUSING TO RUN: {e}", flush=True)
+            return 3
+        print(f"[budget] ok: ${info['remaining']:.2f} of ${info['cap']:.2f} remaining", flush=True)
     if args.dry_run:
         return 0
     # A dropped ssh session (SIGHUP) or `kill` (SIGTERM) must still run our cleanup.
     signal.signal(signal.SIGTERM, _raise_interrupt)
     signal.signal(signal.SIGHUP, _raise_interrupt)
 
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     man = manifest()
     write_atomic(out / "manifest.json", json.dumps(man, indent=2))
     skipped = out / "skipped.jsonl"
-    for launch in plan(cfg):
-        try:
-            asyncio.run(run_launch(cfg, launch, args, out, man))
-        except CapUnavailable as e:
-            print(f"[skip-launch] {launch.variant['name']} r{launch.repeat}: {e}", flush=True)
-            with skipped.open("a") as f:
-                f.write(
-                    json.dumps(
-                        {
-                            "variant": launch.variant["name"],
-                            "repeat": launch.repeat,
-                            "reason": str(e),
-                        }
-                    )
-                    + "\n"
+    started = time.monotonic()
+    pad = budget.load_policy()["safety_margin"] if real else 0.0
+    left_at_start = budget.remaining() if real else float("inf")
+    per_launch_usd = per_launch_seconds(cfg) / 3600 * args.usd_per_hr
+    try:
+        for launch in pending:
+            used = (time.monotonic() - started) / 3600 * args.usd_per_hr
+            if real and used + per_launch_usd * (1 + pad) > left_at_start:
+                print(
+                    f"[budget] STOP: ${used:.2f} used this session; the next launch "
+                    f"would exceed the cap. Remaining launches not run.",
+                    flush=True,
                 )
+                return 4
+            try:
+                asyncio.run(run_launch(cfg, launch, args, out, man))
+            except CapUnavailable as e:
+                print(f"[skip-launch] {launch.variant['name']} r{launch.repeat}: {e}", flush=True)
+                with skipped.open("a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "variant": launch.variant["name"],
+                                "repeat": launch.repeat,
+                                "reason": str(e),
+                            }
+                        )
+                        + "\n"
+                    )
+    finally:
+        if real:
+            hours = (time.monotonic() - started) / 3600
+            budget.append(
+                {
+                    "kind": "runner_wall",
+                    "usd": hours * args.usd_per_hr,
+                    "hours": hours,
+                    "usd_per_hr": args.usd_per_hr,
+                    "session": out.name,
+                    "note": "lower bound: runner wall time only",
+                }
+            )
+            print(
+                "[budget] REMINDER: stop the pod now, then record the invoice with "
+                "`python -m tokbench.budget add ...`",
+                flush=True,
+            )
     return 0
 
 

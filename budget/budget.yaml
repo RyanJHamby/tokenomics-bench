@@ -1,0 +1,5 @@
+# Hard spend cap for ALL GPU rental on this project, across every attempt and pod.
+# Chosen by the author on 2026-10-04. The runner refuses to start work whose estimate
+# (plus safety margin) would push cumulative spend over the cap.
+cap_usd: 60.0
+safety_margin: 0.20   # estimates are optimistic (startup, retries); pad them by this much

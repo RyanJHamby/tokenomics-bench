@@ -67,9 +67,13 @@ def est_load_seconds(cfg: dict, load: dict) -> float:
     return cfg["n_requests"] * cfg["est_request_s"] / load["concurrency"] + 15
 
 
-def estimate_cost(cfg: dict, usd_per_hr: float) -> dict:
-    launches = len(plan(cfg))
-    per_launch = cfg["startup_seconds"] + sum(est_load_seconds(cfg, ld) for ld in cfg["loads"])
-    seconds = launches * per_launch
+def per_launch_seconds(cfg: dict) -> float:
+    return cfg["startup_seconds"] + sum(est_load_seconds(cfg, ld) for ld in cfg["loads"])
+
+
+def estimate_cost(cfg: dict, usd_per_hr: float, launches: int | None = None) -> dict:
+    """`launches` overrides the planned count (e.g. only the not-yet-done ones on resume)."""
+    launches = len(plan(cfg)) if launches is None else launches
+    seconds = launches * per_launch_seconds(cfg)
     hours = seconds / 3600
     return {"launches": launches, "gpu_hours": hours, "usd": hours * usd_per_hr}
