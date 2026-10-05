@@ -36,7 +36,7 @@ def load_config(path: str | Path) -> dict:
             raise ValueError(f"closed loads need concurrency, open loads need qps: {load}")
     cfg.setdefault("warmup", 0)
     cfg.setdefault("seed", 0)
-    cfg.setdefault("est_seconds_per_load", 60)
+    cfg.setdefault("est_request_s", 4.0)  # rough per-request service time
     cfg.setdefault("startup_seconds", 180)
     return cfg
 
@@ -56,8 +56,19 @@ def load_label(load: dict) -> str:
     return f"c{load['concurrency']}" if load["mode"] == "closed" else f"q{load['qps']}"
 
 
+def est_load_seconds(cfg: dict, load: dict) -> float:
+    """Open loop is paced by arrivals; closed loop by service time / concurrency.
+    Plus a 15 s drain/settle allowance. `est_seconds_per_load` overrides if set."""
+    if "est_seconds_per_load" in cfg:
+        return cfg["est_seconds_per_load"]
+    if load["mode"] == "open":
+        return cfg["n_requests"] / load["qps"] + 15
+    return cfg["n_requests"] * cfg["est_request_s"] / load["concurrency"] + 15
+
+
 def estimate_cost(cfg: dict, usd_per_hr: float) -> dict:
     launches = len(plan(cfg))
-    seconds = launches * (cfg["startup_seconds"] + len(cfg["loads"]) * cfg["est_seconds_per_load"])
+    per_launch = cfg["startup_seconds"] + sum(est_load_seconds(cfg, ld) for ld in cfg["loads"])
+    seconds = launches * per_launch
     hours = seconds / 3600
     return {"launches": launches, "gpu_hours": hours, "usd": hours * usd_per_hr}

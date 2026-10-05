@@ -34,7 +34,7 @@ def server_cmd(kind: str, cfg: dict, variant: dict, port: int) -> list[str]:
     args = [str(a) for a in variant.get("server_args", [])]
     if kind == "mock":
         return [sys.executable, "-m", "tokbench.mockserver", "--port", str(port), *args]
-    return ["vllm", "serve", cfg["model"], "--port", str(port), *args]
+    return ["vllm", "serve", variant.get("model", cfg["model"]), "--port", str(port), *args]
 
 
 async def wait_healthy(base: str, proc: subprocess.Popen, timeout_s: float) -> None:
@@ -85,12 +85,13 @@ def _metric_stats(rows: list[tuple[float, dict]], t0: float, t1: float) -> dict:
 
 
 async def run_load(cfg: dict, load: dict, base: str, variant: dict, args, repeat: int) -> dict:
-    wl = cfg["workload"]
+    wl = variant.get("workload", cfg["workload"])
+    model = variant.get("model", cfg["model"])
     make_body = make_prompt_fn(
         wl["input_tokens"],
         wl["output_tokens"],
         wl.get("prefix_share", 0.0),
-        cfg["model"],
+        model,
         cfg["seed"],
     )
     url = f"{base}/v1/chat/completions"
@@ -161,7 +162,7 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
                     power_cap_w=variant.get("power_cap_w"),
                     synthetic=args.server == "mock" or args.gpu == "fake",
                     manifest=man,
-                    workload=cfg["workload"],
+                    workload=variant.get("workload", cfg["workload"]),
                     seed=cfg["seed"],
                 )
                 name = f"{variant['name']}__{load_label(load)}__r{launch.repeat}.json"
