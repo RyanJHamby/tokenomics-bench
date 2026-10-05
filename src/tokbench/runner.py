@@ -82,11 +82,19 @@ def capacity_path(cfg: dict, out: Path) -> Path:
     return Path(cfg.get("capacity_file") or out / "capacity.json")
 
 
+def capacity_artifact(out: Path, variant: dict, repeat: int) -> Path:
+    return out / f"capacity__{variant['name']}__r{repeat}.json"
+
+
 def launch_done(cfg: dict, out: Path, launch) -> bool:
+    """A launch is done when every one of its loads has its own artifact for THIS repeat.
+    (The shared capacity file must not decide this: it is keyed by variant only, so it
+    would mark repeats 2..n done after repeat 1 and the pilot would lose its variance.)"""
     for load in cfg["loads"]:
         if load["mode"] == "capacity_search":
-            cap = read_capacity(capacity_path(cfg, out)) or {}
-            if launch.variant["name"] not in cap:
+            try:
+                json.loads(capacity_artifact(out, launch.variant, launch.repeat).read_text())
+            except (OSError, ValueError):
                 return False
         elif not cell_done(cell_path(out, launch.variant, load, launch.repeat)):
             return False
@@ -304,7 +312,7 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
         )
 
     found = await find_capacity(passes, load["qps_lo"], load["qps_hi"], load["resolution"])
-    write_atomic(out / f"capacity__{variant['name']}__r{repeat}.json", json.dumps(found, indent=2))
+    write_atomic(capacity_artifact(out, variant, repeat), json.dumps(found, indent=2))
     if found["capacity"] is None:
         raise CellFailed(f"{variant['name']} fails the SLO even at qps_lo={load['qps_lo']}")
     update_capacity_file(capacity_path(cfg, out), variant["name"], found["capacity"])

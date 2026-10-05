@@ -258,3 +258,31 @@ def test_cells_record_client_loop_lag_and_flag_saturation(setup):
     for c in cells:
         c["client"]["client_ok"] = False
     assert all(r["invalid"] for r in aggregate(cells))
+
+
+def test_every_repeat_of_a_capacity_search_runs_not_just_the_first(setup):
+    """Regression: launch_done keyed on the shared capacity file marked repeats 2..n done
+    after repeat 1, so the pilot would have had one capacity sample and no variance."""
+    make, out = setup
+    cfg = {
+        **CFG,
+        "repeats": 2,
+        "workload": {"input_tokens": 16, "output_tokens": 5},
+        "measure_s": 2.0,
+        "warmup_s": 0.3,
+        "drain_s": 2.0,
+        "slo": {"ttft_s": 0.5, "tpot_s": 0.2},
+        "variants": [
+            {
+                "name": "m",
+                "server_args": ["--tpot", "0.02", "--slots", "2", "--prefill", "0"],
+                "slots": 2,
+            }
+        ],
+        "loads": [{"mode": "capacity_search", "qps_lo": 4, "qps_hi": 32, "resolution": 0.3}],
+    }
+    assert _run(make(cfg), out) == 0
+    assert (out / "capacity__m__r0.json").exists() and (out / "capacity__m__r1.json").exists()
+    mt = {p.name: p.stat().st_mtime_ns for p in out.glob("capacity__*.json")}
+    assert _run(make(cfg), out) == 0  # resume: nothing rerun
+    assert {p.name: p.stat().st_mtime_ns for p in out.glob("capacity__*.json")} == mt
