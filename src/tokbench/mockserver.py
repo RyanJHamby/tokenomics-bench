@@ -17,7 +17,7 @@ from aiohttp import web
 
 
 def make_app(
-    prefill_s_per_token: float = 0.0001, tpot_s: float = 0.01, slots: int = 8
+    prefill_s_per_token: float = 0.0001, tpot_s: float = 0.01, slots: int = 8, salt: str = ""
 ) -> web.Application:
     sem = asyncio.Semaphore(slots)
     state = {"running": 0, "waiting": 0, "slots": slots}
@@ -27,6 +27,10 @@ def make_app(
         text = " ".join(m.get("content", "") for m in body.get("messages", []))
         prompt_tokens = max(1, len(text.split()))
         n_out = int(body.get("max_tokens", 16))
+        if not body.get("stream"):  # deterministic function of the prompt (+ salt)
+            h = abs(hash((text, salt))) % 1000 if salt else 0
+            content = " ".join(f"{text.split()[-1] if text else ''}{i}{h}" for i in range(n_out))
+            return web.json_response({"choices": [{"message": {"content": content}}]})
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
         state["waiting"] += 1
