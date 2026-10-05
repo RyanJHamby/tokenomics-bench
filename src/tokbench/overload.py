@@ -15,15 +15,17 @@ from .report import aggregate, load_cells
 
 
 def capacity_qps(rows: list[dict], variant: str, ttft_slo: float, tpot_slo: float) -> float | None:
-    """Highest open-loop QPS (no failed requests) whose p99 TTFT and TPOT meet the SLO.
-    Assumes latency is monotone in load; stops at the first violation going up."""
+    """Highest open-loop QPS (no failed or invalid cells) whose p99 TTFT and TPOT meet the
+    SLO. Assumes latency is monotone in load; stops at the first violation going up.
+    NaN or missing measurements are violations, never passes."""
     pts = sorted(
         (r for r in rows if r["variant"] == variant and r["load"]["mode"] == "open"),
         key=lambda r: r["load"]["qps"],
     )
     best = None
     for r in pts:
-        if r["any_failures"] or r["ttft_p99"] > ttft_slo or r["tpot_p99"] > tpot_slo:
+        meets = r["ttft_p99"] <= ttft_slo and r["tpot_p99"] <= tpot_slo  # NaN -> False
+        if r["any_failures"] or r.get("invalid") or not meets:
             break
         best = r["load"]["qps"]
     return best
