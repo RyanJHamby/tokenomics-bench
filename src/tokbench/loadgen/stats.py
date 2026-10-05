@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -22,25 +23,63 @@ def percentile(values: Sequence[float], q: float) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
-def summarize(records: Sequence[RequestRecord], wall_s: float, warmup: int = 0) -> dict:
-    """Aggregate records. The first `warmup` requests by send time are discarded."""
+def steady_window(recs: Sequence[RequestRecord]) -> float:
+    """Seconds from first kept send to last kept completion. Tokens and time use the
+    same requests, so throughput is not biased by discarded warmup or the drain."""
+    if not recs:
+        return float("nan")
+    return max(r.t_last for r in recs) - min(r.t_send for r in recs)
+
+
+def summarize(
+    records: Sequence[RequestRecord],
+    wall_s: float | None = None,
+    warmup: int = 0,
+    ttft_slo: float | None = None,
+    tpot_slo: float | None = None,
+) -> dict:
+    """Aggregate records. The first `warmup` requests by send time are discarded.
+
+    Throughput is over the steady window of the kept requests unless `wall_s` is given.
+    With SLOs, `slo_attainment` is the fraction of ALL kept requests (failures count as
+    misses) that met both, and `goodput_tok_s` counts only tokens from those requests.
+    """
     recs = sorted(records, key=lambda r: r.t_send)[warmup:]
     ok = [r for r in recs if r.ok]
+    window = wall_s if wall_s is not None else steady_window(recs)
+    out_tokens = sum(r.n_out for r in ok)
     ttft = [r.ttft for r in ok]
     tpot = [r.tpot for r in ok if r.tpot is not None]
-    e2e = [r.e2e for r in ok]
-    out_tokens = sum(r.n_out for r in ok)
-    return {
+    itl = [g for r in ok for g in r.itls]
+    out = {
         "n_requests": len(recs),
         "n_ok": len(ok),
         "n_failed": len(recs) - len(ok),
-        "wall_s": wall_s,
+        "errors": sorted({r.error for r in recs if r.error}),
+        "window_s": window,
         "output_tokens": out_tokens,
-        "throughput_tok_s": out_tokens / wall_s if wall_s > 0 else float("nan"),
+        "mean_prompt_tokens": (
+            sum(r.prompt_tokens for r in ok if r.prompt_tokens) / max(1, len(ok))
+            if any(r.prompt_tokens for r in ok)
+            else None
+        ),
+        "throughput_tok_s": out_tokens / window if window and window > 0 else float("nan"),
         "ttft_p50": percentile(ttft, 50),
         "ttft_p99": percentile(ttft, 99),
         "tpot_p50": percentile(tpot, 50),
         "tpot_p99": percentile(tpot, 99),
-        "e2e_p50": percentile(e2e, 50),
-        "e2e_p99": percentile(e2e, 99),
+        "itl_p99": percentile(itl, 99),
+        "e2e_p50": percentile([r.e2e for r in ok], 50),
+        "e2e_p99": percentile([r.e2e for r in ok], 99),
     }
+    if ttft_slo is not None and tpot_slo is not None:
+        good = [r for r in ok if r.ttft <= ttft_slo and (r.tpot is None or r.tpot <= tpot_slo)]
+        out["slo_attainment"] = len(good) / len(recs) if recs else float("nan")
+        gt = sum(r.n_out for r in good)
+        out["goodput_tok_s"] = gt / window if window and window > 0 else float("nan")
+        out["goodput_req_s"] = len(good) / window if window and window > 0 else float("nan")
+    return out
+
+
+def finite(x: float | None) -> bool:
+    return x is not None and not math.isnan(x) and not math.isinf(x)
