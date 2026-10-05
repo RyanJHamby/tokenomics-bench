@@ -50,3 +50,24 @@ def test_rendered_predictions_flag_unverified_hardware_and_are_reproducible():
     md = m.render_markdown()
     assert "unverified" in md.lower() and "Committed before any GPU run" in md
     assert md == m.render_markdown()
+
+
+def test_slo_capacity_is_below_saturation_and_monotone_in_the_slo():
+    sat = m.saturation_req_s(L40S, "fp16", 512, 128)["req_s"]
+    caps = [m.slo_capacity_req_s(L40S, "fp16", 512, 128, slo) for slo in (0.03, 0.05, 0.1, 1.0)]
+    assert caps == sorted(caps) and caps[1] < sat  # TPOT SLO binds before saturation
+    assert caps[-1] <= sat * 1.001  # a loose SLO converges to (at most) saturation
+    assert m.slo_capacity_req_s(L40S, "fp16", 512, 128, 0.001) == 0.0  # infeasible: below one step
+
+
+def test_fp8_has_materially_more_slo_capacity_than_fp16():
+    f16 = m.slo_capacity_req_s(L40S, "fp16", 512, 128, 0.05)
+    f8 = m.slo_capacity_req_s(L40S, "fp8", 512, 128, 0.05)
+    assert f8 > 1.2 * f16
+
+
+def test_prediction_intervals_are_ordered_and_match_the_rendered_table():
+    iv = m.prediction_intervals("L40S")
+    assert all(lo <= hi for lo, hi, _ in iv.values())
+    lo, hi, _ = iv["slo_capacity_req_s:fp16"]
+    assert f"{lo:.1f} - {hi:.1f}" in m.render_markdown()

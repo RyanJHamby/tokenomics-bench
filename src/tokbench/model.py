@@ -102,6 +102,44 @@ def saturation_req_s(
     }
 
 
+def slo_capacity_req_s(
+    hw, prec, n_in, n_out, tpot_slo_s, mem_eff=0.75, mfu=0.5, max_num_seqs=256, kv_dtype="fp16"
+) -> float:
+    """Highest arrival rate whose TPOT stays within the SLO, in a fluid model.
+
+    At rate lam the server spends a fraction lam*prefill_s of its time in prefill, so the
+    decode step stretches to step(B)/(1 - lam*prefill_s), with batch B = lam*n_out*stretched
+    step (Little's law). Capacity is the largest lam where that stretched step <= tpot_slo and
+    B fits the KV cache / max_num_seqs. TTFT is ignored here (it only binds near saturation).
+    """
+    p = prefill_s(hw, prec, n_in, mfu)
+    cap_b = max(
+        1, min(kv_capacity_tokens(hw, prec, kv_dtype=kv_dtype) // (n_in + n_out), max_num_seqs)
+    )
+
+    def feasible(lam: float) -> bool:
+        if lam * p >= 1.0:
+            return False
+        eff = 0.0
+        for _ in range(60):  # fixed point of eff = step(B)/(1-lam*p), B = lam*n_out*eff
+            b = lam * n_out * eff
+            nxt = decode_step_s(
+                hw, prec, max(1, round(b)) if b >= 1 else 1, n_in + n_out / 2, mem_eff, kv_dtype
+            ) / (1.0 - lam * p)
+            if abs(nxt - eff) < 1e-9:
+                break
+            eff = nxt
+        return eff <= tpot_slo_s and lam * n_out * eff <= cap_b
+
+    lo, hi = 0.0, 1.0 / p
+    if not feasible(1e-6):
+        return 0.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if feasible(mid) else (lo, mid)
+    return lo
+
+
 def interval(fn, *, mem_effs=(0.65, 0.85), mfus=(0.35, 0.60)) -> tuple[float, float]:
     """Min/max of fn(mem_eff, mfu) over the corners of the efficiency ranges."""
     vals = [fn(m, f) for m in mem_effs for f in mfus]
@@ -113,28 +151,51 @@ def ttft_unloaded_s(hw, prec, n_in, mem_eff=0.75, mfu=0.5) -> float:
     return prefill_s(hw, prec, n_in, mfu) + decode_step_s(hw, prec, 1, n_in, mem_eff)
 
 
-def predictions(hw_name: str, n_in: int = 512, n_out: int = 128) -> list[tuple[str, str, str]]:
+TPOT_SLO_S = 0.05  # primary SLO (docs/PREREG-v2.md)
+
+
+def prediction_intervals(hw_name: str, n_in: int = 512, n_out: int = 128) -> dict[str, tuple]:
+    """Machine-readable predictions: key -> (lo, hi, unit). Corners of the efficiency ranges."""
     hw = HARDWARE[hw_name]
-    rows = []
+    out: dict[str, tuple] = {}
     for prec in PRECISIONS:
         lo, hi = interval(
             lambda m, f, prec=prec: batch1_decode_tok_s(hw, prec, n_in + n_out / 2, m)
         )
-        rows.append((f"{prec} batch-1 decode", f"{lo:.0f} - {hi:.0f}", "tok/s"))
-    for prec in PRECISIONS:
+        out[f"batch1_decode_tok_s:{prec}"] = (lo, hi, "tok/s")
         lo, hi = interval(
             lambda m, f, prec=prec: saturation_req_s(hw, prec, n_in, n_out, m, f)["req_s"]
         )
+        out[f"saturation_req_s:{prec}"] = (lo, hi, "req/s")
+        lo, hi = interval(
+            lambda m, f, prec=prec: slo_capacity_req_s(hw, prec, n_in, n_out, TPOT_SLO_S, m, f)
+        )
+        out[f"slo_capacity_req_s:{prec}"] = (lo, hi, "req/s")
+        lo, hi = interval(lambda m, f, prec=prec: ttft_unloaded_s(hw, prec, n_in, m, f))
+        out[f"unloaded_ttft_s:{prec}"] = (lo, hi, "s")
+    return out
+
+
+def predictions(hw_name: str, n_in: int = 512, n_out: int = 128) -> list[tuple[str, str, str]]:
+    hw = HARDWARE[hw_name]
+    iv = prediction_intervals(hw_name, n_in, n_out)
+    rows = []
+    for prec in PRECISIONS:
+        lo, hi, _ = iv[f"batch1_decode_tok_s:{prec}"]
+        rows.append((f"{prec} batch-1 decode", f"{lo:.0f} - {hi:.0f}", "tok/s"))
+    for prec in PRECISIONS:
+        lo, hi, _ = iv[f"saturation_req_s:{prec}"]
         rows.append((f"{prec} saturation rate ({n_in}/{n_out})", f"{lo:.1f} - {hi:.1f}", "req/s"))
+        lo, hi, _ = iv[f"slo_capacity_req_s:{prec}"]
         rows.append(
             (
-                f"{prec} SLO capacity (0.70-0.90 x saturation)",
-                f"{0.70 * lo:.1f} - {0.90 * hi:.1f}",
+                f"{prec} SLO capacity (TPOT <= {TPOT_SLO_S * 1000:.0f} ms)",
+                f"{lo:.1f} - {hi:.1f}",
                 "req/s",
             )
         )
     for prec in PRECISIONS:
-        lo, hi = interval(lambda m, f, prec=prec: ttft_unloaded_s(hw, prec, n_in, m, f))
+        lo, hi, _ = iv[f"unloaded_ttft_s:{prec}"]
         rows.append(
             (f"{prec} unloaded TTFT ({n_in} in)", f"{lo * 1000:.0f} - {hi * 1000:.0f}", "ms")
         )
@@ -168,7 +229,8 @@ def render_markdown(hw_name: str = "L40S", n_in: int = 512, n_out: int = 128) ->
             "Model: memory-bound decode (weights + per-sequence KV streamed each step, memory "
             "efficiency 0.65-0.85), compute-bound prefill (MFU 0.35-0.60), fluid continuous "
             "batching limited by KV capacity (90% utilisation, 2.5 GiB overhead) or "
-            "max_num_seqs=256. Weights-only FP8 keeps embeddings FP16; AWQ-INT4 saves "
+            "max_num_seqs=256. SLO capacity solves for the arrival rate at which TPOT, stretched "
+            "by the time spent in prefill, reaches the SLO (TTFT is ignored). Weights-only FP8 keeps embeddings FP16; AWQ-INT4 saves "
             "bandwidth, not FLOPs. Ranges are the corners of the efficiency ranges."
         ),
         "",
