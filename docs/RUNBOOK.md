@@ -85,7 +85,9 @@ makes no choices the pre-registration did not already make; omit an input and th
 `insufficient_data` instead of guessing.
 
 ## After each block
-- `python -m tokbench.report results/raw/<dir> --png results/<dir>/frontier.png`
+- `python -m tokbench.report results/raw/<dir> --png results/<dir>/frontier.png` and
+  `make figures RUNS="results/raw/<dir> ..." ANALYSIS=results/analysis.json` (figures read only saved data;
+  a figure whose inputs are missing is skipped, never faked; mock/fake-GPU runs are watermarked)
 - Commit raw results in a **signed commit before analysing them**; `pow log` what happened.
 - Stop the pod. Record the invoice: `python -m tokbench.budget add --provider ... --gpu ...
   --usd-per-hr ... --hours ... --session <name>`. A forgotten pod is the biggest cost risk.

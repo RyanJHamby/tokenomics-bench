@@ -117,6 +117,16 @@ The runner starts a server per (variant, repeat), runs a short canary request, a
 and then the loads in a seeded random order. A detached watchdog restores GPU clocks and the default power limit and kills
 the server if the runner is killed. A spend ledger refuses work that would exceed the budget.
 
+### What the output will look like
+
+`make figures` turns saved run data into publication figures: tail latency vs load with CIs, goodput vs energy per token
+with the Pareto front, energy vs achieved SM clock, power/clock/temperature timelines through a cell, TTFT distributions,
+launch-to-launch spread, capacity-search probes, and predicted vs measured. The example below was produced from the
+**mock server and a fake GPU backend**: it demonstrates the pipeline and is watermarked inside the image. It is **not a
+measurement** and says nothing about any real GPU.
+
+![Example figure from synthetic data: goodput vs energy per token, watermarked as synthetic](docs/img/example-synthetic-frontier.png)
+
 ## Repository map
 
 ```
@@ -140,8 +150,9 @@ scripts/          pod setup, preflight, run, sync         tests/      200+ tests
 python -m venv .venv && . .venv/bin/activate
 make install          # pip install -e ".[dev]"
 make test             # mock-server and fake-GPU tests
-make demo             # synthetic end-to-end run; output is watermarked and is NOT a result
+make demo             # synthetic end-to-end run + figures; output is watermarked and is NOT a result
 make estimate PRICE=1.0   # planned GPU-hours and dollars per block
+make figures RUNS="results/raw/<run-a> results/raw/<run-b>"   # figures from saved real runs
 ```
 
 To run on real hardware, follow [`docs/RUNBOOK.md`](docs/RUNBOOK.md): pre-rental checklist, pod setup, preflight (version
@@ -181,7 +192,7 @@ Stated up front, and repeated in the pre-registration:
 ## Roadmap
 
 Done: pre-registration, harness, predictions, persistence, safety (watchdog, canary, ledger), analysis, configs.
-Next: first hardware run (pilot, then core blocks), then figures and the written analysis. Not yet built: a versioned result-schema document, an accuracy-parity gate wired into every quantized arm, and a per-run
+Next: first hardware run (pilot, then core blocks), then the written analysis. Not yet built: a versioned result-schema document, an accuracy-parity gate wired into every quantized arm, and a per-run
 provenance index.
 
 ## How this was built
