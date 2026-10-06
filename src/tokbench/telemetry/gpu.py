@@ -40,6 +40,12 @@ class GpuSample:
     util_pct: int = 0
     throttle_reasons: int = 0  # NVML clocks-throttle-reasons bitmask
     energy_mj: float | None = None  # cumulative energy counter, if the backend has one
+    # Optional extras; None where a field is unsupported. Persisted in the per-cell series.
+    enforced_limit_w: float | None = None
+    pstate: int | None = None
+    mem_used_mib: float | None = None
+    viol_power_ns: int | None = None  # cumulative time held back by the power policy
+    viol_thermal_ns: int | None = None
 
 
 class GpuBackend(Protocol):
@@ -59,8 +65,28 @@ class NvmlBackend:
         except pynvml.NVMLError:
             self._has_energy = False
 
+    def _opt(self, fn, *args):
+        """Optional field: None if this GPU/driver does not support it (never raises)."""
+        try:
+            return fn(*args)
+        except self._n.NVMLError:
+            return None
+
+    def _reasons(self) -> int:
+        """Newer nvidia-ml-py renamed ThrottleReasons to EventReasons; accept either."""
+        n = self._n
+        fn = (
+            getattr(n, "nvmlDeviceGetCurrentClocksEventReasons", None)
+            or n.nvmlDeviceGetCurrentClocksThrottleReasons
+        )
+        return fn(self._h)
+
     def read(self) -> GpuSample:
         n, h = self._n, self._h
+        limit = self._opt(n.nvmlDeviceGetEnforcedPowerLimit, h)
+        mem = self._opt(n.nvmlDeviceGetMemoryInfo, h)
+        vp = self._opt(n.nvmlDeviceGetViolationStatus, h, getattr(n, "NVML_PERF_POLICY_POWER", 0))
+        vt = self._opt(n.nvmlDeviceGetViolationStatus, h, getattr(n, "NVML_PERF_POLICY_THERMAL", 1))
         return GpuSample(
             t=time.perf_counter(),
             power_w=n.nvmlDeviceGetPowerUsage(h) / 1000.0,  # mW -> W
@@ -68,10 +94,15 @@ class NvmlBackend:
             mem_clock_mhz=n.nvmlDeviceGetClockInfo(h, n.NVML_CLOCK_MEM),
             temp_c=n.nvmlDeviceGetTemperature(h, n.NVML_TEMPERATURE_GPU),
             util_pct=n.nvmlDeviceGetUtilizationRates(h).gpu,
-            throttle_reasons=n.nvmlDeviceGetCurrentClocksThrottleReasons(h),
+            throttle_reasons=self._reasons(),
             energy_mj=(
                 float(n.nvmlDeviceGetTotalEnergyConsumption(h)) if self._has_energy else None
             ),
+            enforced_limit_w=limit / 1000.0 if limit is not None else None,
+            pstate=self._opt(n.nvmlDeviceGetPerformanceState, h),
+            mem_used_mib=mem.used / 2**20 if mem is not None else None,
+            viol_power_ns=vp.violationTime if vp is not None else None,
+            viol_thermal_ns=vt.violationTime if vt is not None else None,
         )
 
     def close(self) -> None:

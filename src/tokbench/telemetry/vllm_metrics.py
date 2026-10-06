@@ -41,19 +41,32 @@ def parse_prometheus(text: str) -> dict[str, float]:
 
 
 class MetricsScraper:
-    def __init__(self, url: str, interval_s: float = 0.5):
-        self.url, self.interval_s = url, interval_s
+    """Polls /metrics. `rows` are parsed (summed across label sets) at `interval_s`; `raw`
+    keeps the exposition text (labels, histogram buckets) every `raw_every_s` and at the end,
+    so anything the parsed rows dropped can still be recovered."""
+
+    def __init__(self, url: str, interval_s: float = 0.5, raw_every_s: float = 15.0):
+        self.url, self.interval_s, self.raw_every_s = url, interval_s, raw_every_s
         self.rows: list[tuple[float, dict[str, float]]] = []
+        self.raw: list[tuple[float, str]] = []
+        self.errors = 0
         self._task: asyncio.Task | None = None
+
+    async def _scrape(self, session: aiohttp.ClientSession) -> None:
+        try:
+            async with session.get(self.url) as r:
+                text = await r.text()
+            t = time.perf_counter()
+            self.rows.append((t, parse_prometheus(text)))
+            if not self.raw or t - self.raw[-1][0] >= self.raw_every_s:
+                self.raw.append((t, text))
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            self.errors += 1
 
     async def _run(self) -> None:
         async with aiohttp.ClientSession() as s:
             while True:
-                try:
-                    async with s.get(self.url) as r:
-                        self.rows.append((time.perf_counter(), parse_prometheus(await r.text())))
-                except (aiohttp.ClientError, TimeoutError, ValueError):
-                    pass
+                await self._scrape(s)
                 await asyncio.sleep(self.interval_s)
 
     async def __aenter__(self) -> Self:
@@ -66,3 +79,7 @@ class MetricsScraper:
             await self._task
         except asyncio.CancelledError:
             pass
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as s:
+            await self._scrape(s)  # end-of-load state
+            if self.rows and (not self.raw or self.raw[-1][0] != self.rows[-1][0]):
+                pass  # last parsed row is kept; raw text only at intervals + first

@@ -19,6 +19,7 @@ import itertools
 import json
 import random
 import time
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -35,7 +36,11 @@ class RequestRecord:
     prompt_tokens: int | None = None
     ok: bool = False
     error: str = ""
-    itls: list[float] = field(default_factory=list)  # gaps between content chunks
+    itls: list[float] = field(default_factory=list)  # gaps between content CHUNKS (not tokens)
+    idx: int = -1  # request index within the load
+    req_id: str = ""  # server request id (e.g. cmpl-...), for joining with server logs
+    n_chunks: int = 0  # content chunks seen; > n_out is impossible, < n_out means batched tokens
+    crc: int = 0  # crc32 of the streamed text: determinism checks across variants
 
     @property
     def ttft(self) -> float:
@@ -90,6 +95,8 @@ async def _one(
                     saw_done = True
                     break
                 evt = json.loads(data)
+                if not rec.req_id and evt.get("id"):
+                    rec.req_id = str(evt["id"])
                 if "error" in evt:
                     rec.error = "stream error"
                     break
@@ -105,11 +112,13 @@ async def _one(
                         rec.itls.append(now - rec.t_last)
                     rec.t_last = now
                     chunks += 1
+                    rec.crc = zlib.crc32(_text(choices[0]).encode(), rec.crc)
                 elif choices and choices[0].get("finish_reason") and rec.t_first is not None:
                     # The last token can arrive in a chunk with empty text (a token ending
                     # mid-UTF-8, a special token, ignore_eos past EOS). Generation ended
                     # here, so t_last must not stay at the previous text chunk.
                     rec.t_last = time.perf_counter()
+        rec.n_chunks = chunks
         rec.n_out = usage_tokens if usage_tokens is not None else chunks
         if not rec.error:
             if rec.t_first is None:
@@ -180,7 +189,7 @@ async def run_closed_loop(
             for i in counter:
                 if time.perf_counter() >= stop:
                     return
-                rec = RequestRecord(t_sched=time.perf_counter(), t_send=0.0)
+                rec = RequestRecord(t_sched=time.perf_counter(), t_send=0.0, idx=i)
                 records.append(rec)
                 await _one(session, url, make_body(i), rec, expect_out)
 
@@ -240,7 +249,7 @@ async def _run_arrivals(
             delay = t0 + offset - time.perf_counter()
             if delay > 0:
                 await asyncio.sleep(delay)
-            rec = RequestRecord(t_sched=t0 + offset, t_send=0.0)
+            rec = RequestRecord(t_sched=t0 + offset, t_send=0.0, idx=i)
             records.append(rec)
             tasks.append(asyncio.create_task(_one(session, url, make_body(i), rec, expect_out)))
         deadline = t0 + duration_s + drain_s if duration_s is not None else None

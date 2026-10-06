@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Self
 
 import aiohttp
@@ -104,10 +105,14 @@ class ServerProcess:
         quiet: bool = False,
         wait_gpu_free: bool = False,
         gpu_index: int = 0,
+        log_path: Path | None = None,
     ):
         self.cmd, self.port, self.timeout = cmd, port, startup_timeout_s
         self.quiet, self.wait_gpu_free, self.gpu_index = quiet, wait_gpu_free, gpu_index
         self.proc: subprocess.Popen | None = None
+        self.log_path = log_path
+        self._log = None
+        self.t_spawn = self.t_healthy = None  # perf_counter anchors for launch.json
         self.base = f"http://127.0.0.1:{port}"
 
     async def __aenter__(self) -> Self:
@@ -115,14 +120,22 @@ class ServerProcess:
             raise RuntimeError(
                 f"port {self.port} is in use; a stale server would be benchmarked instead"
             )
+        out_kw: dict = {"stdout": subprocess.DEVNULL if self.quiet else None}
+        if self.log_path is not None:  # vLLM logs the effective config, KV size, graph capture
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log = await asyncio.to_thread(open, self.log_path, "ab", 0)
+            out_kw = {"stdout": self._log, "stderr": subprocess.STDOUT}
+        self.t_spawn = time.perf_counter()
         self.proc = await asyncio.to_thread(
             subprocess.Popen,
             self.cmd,
             start_new_session=True,
-            stdout=subprocess.DEVNULL if self.quiet else None,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            **out_kw,
         )
         try:
             await wait_healthy(self.base, self.proc, self.timeout)
+            self.t_healthy = time.perf_counter()
         except BaseException:
             await self.__aexit__(None, None, None)
             raise
@@ -131,6 +144,8 @@ class ServerProcess:
     async def __aexit__(self, *exc) -> None:
         if self.proc is not None:
             await asyncio.to_thread(kill_group, self.proc)
+        if self._log is not None:
+            self._log.close()
         if self.wait_gpu_free:
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
