@@ -24,6 +24,8 @@ drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cu
 python -c 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)' 2>/dev/null \
   && ok "torch sees the GPU" || bad "torch.cuda.is_available() is false"
 
+mkdir -p results/preflight
+python -m tokbench.telemetry.probe | tee results/preflight/telemetry_probe.json | python -c 'import json,sys; d=json.load(sys.stdin); print("telemetry:", d.get("nvml"), "| dcgmi:", bool(d.get("dcgmi")), "| RAPL:", d.get("rapl_readable")); [print("   unsupported:", k) for k,v in d.get("fields",{}).items() if v!="ok"]'
 python - <<'PY' && ok "nvml energy counter" || bad "nvidia-ml-py missing or no energy counter (falls back to sampled power: less accurate)"
 import pynvml
 pynvml.nvmlInit()
