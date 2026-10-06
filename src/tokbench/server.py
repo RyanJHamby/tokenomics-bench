@@ -106,11 +106,14 @@ class ServerProcess:
         wait_gpu_free: bool = False,
         gpu_index: int = 0,
         log_path: Path | None = None,
+        on_spawn=None,
+        on_exit=None,
     ):
         self.cmd, self.port, self.timeout = cmd, port, startup_timeout_s
         self.quiet, self.wait_gpu_free, self.gpu_index = quiet, wait_gpu_free, gpu_index
         self.proc: subprocess.Popen | None = None
         self.log_path = log_path
+        self.on_spawn, self.on_exit = on_spawn, on_exit  # lease bookkeeping for the watchdog
         self._log = None
         self.t_spawn = self.t_healthy = None  # perf_counter anchors for launch.json
         self.base = f"http://127.0.0.1:{port}"
@@ -133,6 +136,8 @@ class ServerProcess:
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
             **out_kw,
         )
+        if self.on_spawn:
+            self.on_spawn(self.proc.pid)
         try:
             await wait_healthy(self.base, self.proc, self.timeout)
             self.t_healthy = time.perf_counter()
@@ -146,6 +151,8 @@ class ServerProcess:
             await asyncio.to_thread(kill_group, self.proc)
         if self._log is not None:
             self._log.close()
+        if self.on_exit and self.proc is not None:
+            self.on_exit(self.proc.pid)
         if self.wait_gpu_free:
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:

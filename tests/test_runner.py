@@ -103,7 +103,7 @@ def test_torn_or_old_schema_cells_are_redone(setup, tmp_path):
 def test_total_failure_aborts_with_a_clear_error_instead_of_burning_gpu_time(setup):
     make, out = setup
     cfg = {**CFG, "variants": [{"name": "v", "server_args": ["--fail-after", "2"]}]}
-    with pytest.raises(CellFailed, match="no successful requests|requests failed"):
+    with pytest.raises(CellFailed, match="canary|no successful requests|requests failed"):
         _run(make(cfg), out)
     assert not list(out.glob("v__*.json"))  # nothing invalid written as if it were data
 

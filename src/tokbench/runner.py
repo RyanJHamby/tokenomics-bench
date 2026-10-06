@@ -25,7 +25,10 @@ import signal
 import time
 from pathlib import Path
 
+import aiohttp
+
 from . import budget
+from . import watchdog as wd
 from .capacity import find_capacity, update_capacity_file
 from .capture import (
     Anchor,
@@ -445,6 +448,38 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
     print(f"  capacity[{variant['name']}] = {found['capacity']:.4g} qps{flag}", flush=True)
 
 
+async def canary(cfg: dict, base: str, variant: dict, strict: bool, metrics_expected: bool) -> dict:
+    """One tiny request after /health and before the soak. /health only says the API server is
+    up; this proves a real completion works, usage reports the exact prompt length, and (vLLM)
+    /metrics is being served. Cheap insurance against paying for a run that can never be valid."""
+    n_in, n_out = 16, 8
+    make_body, _ = _body_fn({**cfg, "workload": {"input_tokens": n_in, "output_tokens": n_out}},
+                            {**variant, "workload": None}, salt_for(998, 98))  # fmt: skip
+    recs, _ = await run_closed_loop(f"{base}/v1/completions", make_body, 1, 1, expect_out=n_out)
+    rec = recs[0]
+    problems = []
+    if not rec.ok:
+        problems.append(f"canary request failed: {rec.error}")
+    elif strict and rec.prompt_tokens != n_in:
+        problems.append(f"usage.prompt_tokens={rec.prompt_tokens}, expected {n_in}")
+    if strict and metrics_expected:
+        async with aiohttp.ClientSession() as s:
+            try:
+                async with s.get(f"{base}/metrics") as m:
+                    if "vllm:num_requests_running" not in await m.text():
+                        problems.append("/metrics has no vllm:num_requests_running")
+            except aiohttp.ClientError as e:
+                problems.append(f"/metrics unreachable: {e}")
+    if problems:
+        raise CellFailed("canary: " + "; ".join(problems))
+    return {
+        "ok": True,
+        "ttft_s": rec.ttft,
+        "prompt_tokens": rec.prompt_tokens,
+        "req_id": rec.req_id,
+    }
+
+
 def launch_dir(out: Path, variant: dict, repeat: int) -> Path:
     d = out / "launches" / f"{variant['name']}__r{repeat}"
     d.mkdir(parents=True, exist_ok=True)
@@ -477,12 +512,16 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
         server_cm = ServerProcess(
             cmd, PORT, cfg["startup_seconds"] * 3, quiet=args.quiet_server, wait_gpu_free=real,
             gpu_index=args.gpu_index, log_path=log_path,
+            on_spawn=args.lease.add_server if args.lease else None,
+            on_exit=args.lease.remove_server if args.lease else None,
         )  # fmt: skip
     ev.emit("launch_start", variant=variant["name"], repeat=launch.repeat, cmd=cmd)
     try:
         async with server_cm as srv:
-            _write_launch_json(ldir, args, variant, launch, cmd, srv)
-            ev.emit("healthy", variant=variant["name"], repeat=launch.repeat)
+            probe = await canary(cfg, srv.base, variant, args.server != "mock",
+                                 variant.get("engine") != "sglang")  # fmt: skip
+            _write_launch_json(ldir, args, variant, launch, cmd, srv, probe)
+            ev.emit("healthy", variant=variant["name"], repeat=launch.repeat, **probe)
             with (
                 PowerCap(variant.get("power_cap_w"), enabled=real, index=args.gpu_index),
                 ClockLock(variant.get("clock_lock_mhz"), enabled=real, index=args.gpu_index),
@@ -522,7 +561,9 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
         ev.emit("launch_end", variant=variant["name"], repeat=launch.repeat)
 
 
-def _write_launch_json(ldir: Path, args, variant: dict, launch, cmd: list[str], srv) -> None:
+def _write_launch_json(
+    ldir: Path, args, variant: dict, launch, cmd: list[str], srv, canary_res: dict
+) -> None:
     """Launch metadata with wall-clock anchors, so server.log lines align with GPU traces."""
     t_spawn, t_healthy = getattr(srv, "t_spawn", None), getattr(srv, "t_healthy", None)
     meta = {
@@ -533,6 +574,7 @@ def _write_launch_json(ldir: Path, args, variant: dict, launch, cmd: list[str], 
         "wall_healthy": args.anchor.wall(t_healthy) if t_healthy else None,
         "time_to_healthy_s": (t_healthy - t_spawn) if t_spawn and t_healthy else None,
         "env": allowlisted_env(dict(os.environ)),
+        "canary": canary_res,
     }  # fmt: skip
     write_atomic(ldir / "launch.json", json.dumps(meta, indent=2))
 
@@ -564,6 +606,13 @@ def main(argv: list[str] | None = None) -> int:
         help="(server output always goes to launches/*/server.log)",
     )
     ap.add_argument(
+        "--watchdog",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="detached watchdog that resets GPU clocks/power and kills the server if the "
+        "runner dies (default: on for real GPU runs)",
+    )
+    ap.add_argument(
         "--capture-env",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -580,6 +629,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.capture_env is None:
         args.capture_env = args.server != "mock"
+    if args.watchdog is None:
+        args.watchdog = args.gpu == "nvml"
+    args.lease = None
 
     out = Path(args.out)
     cfg = load_config(args.config)
@@ -621,6 +673,10 @@ def main(argv: list[str] | None = None) -> int:
         ]  # fmt: skip
         capture_env(out, pins)
     args.events.emit("run_start", config=args.config, argv=argv)
+    if args.watchdog:
+        args.lease = wd.Lease(out / "lease.json", args.gpu_index)
+        args.lease.start()
+        wd.spawn(out / "lease.json", out / "watchdog.log")
     skipped = out / "skipped.jsonl"
     started = time.monotonic()
     pad = budget.load_policy()["safety_margin"] if real else 0.0
@@ -652,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
                         + "\n"
                     )
     finally:
+        if args.lease:
+            args.lease.stop()  # lease removed = clean shutdown; the watchdog exits quietly
         if real:
             hours = (time.monotonic() - started) / 3600
             budget.append(
