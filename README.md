@@ -23,12 +23,14 @@ This project measures that frontier directly, on one GPU, under a p99 SLO, with 
 
 ## Prior work, and what this adds
 
-The headline mechanism is not new. *The Illusion of Power Capping in LLM Decode* (arXiv 2605.11999) reports that SM
-clock locking beats power capping for decode on an H200 with ~4B dense models, and its limitations name MoE and other
-GPU generations as open. ML.ENERGY / Zeus and the "Watt Counts" study supply the energy-measurement methodology;
-InferenceX and MLPerf supply SLO-constrained throughput. None of those, as far as I could find, reports
-goodput-per-joule and goodput-per-dollar under an SLO with lock-vs-cap arms on one GPU under vLLM (that search was not
-exhaustive).
+The headline mechanism is not new. *The Illusion of Power Capping in LLM Decode* (Ma et al., arXiv 2605.11999,
+May 2026) reports, on a single H200 running vLLM with ≈4B dense models at batch sizes 1-32, that decode draws far below
+the board limit so a power cap never triggers, and that locking the SM clock recovers up to 32% of decode energy. Its
+limitations name MoE models and other GPU generations as open, and it reports no SLO or goodput metric. Adjacent work
+measures inference energy under realistic serving load (the ML.ENERGY Benchmark, NeurIPS D&B 2025; Watt Counts,
+arXiv 2604.09048) or continuously benchmarks inference performance across hardware (InferenceX, formerly InferenceMAX).
+As far as I could find, none reports goodput-per-joule and goodput-per-dollar under an SLO with lock-vs-cap arms on one
+GPU under vLLM; that search was not exhaustive.
 
 This repository therefore **replicates and extends** rather than claiming priority:
 
@@ -170,26 +172,31 @@ Stated up front, and repeated in the pre-registration:
 - Rental price is a snapshot; a pod's silicon and cooling vary, so a result describes one machine on one day.
 - AWQ is a third-party checkpoint (a model change as well as a precision change). FP8-KV changes the attention backend as
   well as the KV dtype on this GPU (a kernel confound). Both are labelled exploratory.
-- Hardware figures in the prediction model are unverified recollections and must be checked against the datasheet before
-  publication. The SGLang flags have not been verified against a source tree.
+- The prediction model's L40S and H100-SXM hardware figures were checked against NVIDIA's product pages on 2026-10-06
+  (NVIDIA lists the sparsity figures; dense is half). The H100-PCIe entry and the model's efficiency ranges are assumptions.
+  The SGLang flags have not been verified against a source tree.
 - The harness has been validated against mock servers, a fake GPU backend, and a real local streaming server for client
   behavior. **vLLM-specific and NVML-specific behavior is unverified on hardware**; the first run is partly a smoke test.
 
 ## Roadmap
 
 Done: pre-registration, harness, predictions, persistence, safety (watchdog, canary, ledger), analysis, configs.
-Next: first hardware run (pilot, then core blocks), then figures and the written analysis. Not yet built: a `make figures`
-target, a versioned result-schema document, an accuracy-parity gate wired into every quantized arm, and a per-run
+Next: first hardware run (pilot, then core blocks), then figures and the written analysis. Not yet built: a versioned result-schema document, an accuracy-parity gate wired into every quantized arm, and a per-run
 provenance index.
 
 ## How this was built
 
-The research question, the thesis, the $60 budget cap, and the scoping decisions are the author's. The harness, tests,
-pre-registration drafts and the adversarial design reviews were produced with an AI coding assistant (Claude Code) working
-in this repository under the author's direction; commits carry a `Co-Authored-By` trailer. The AI-generated reviews are
-claims to check, not authority: several findings were re-verified by hand (noted in the journal) and others were not.
-Statements about results are made only from captured runs in [`results/`](results/). The author's line-by-line review
-status is tracked in the journal rather than asserted here.
+The research question, the thesis, the $60 budget cap and the scoping decisions are the author's. The harness, tests,
+pre-registration drafts and the adversarial design reviews were produced with an AI coding assistant (Claude Code)
+working in this repository under the author's direction; commits carry a `Co-Authored-By` trailer. **The author directed
+the design and decisions and has not yet read every file line by line; that review is in progress and is being done
+before the first hardware run.** The AI-generated reviews are claims to check, not authority: several findings were
+re-verified by hand (noted in the journal) and others were not. Statements about results are made only from captured runs
+in [`results/`](results/).
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
 
 ## Author
 
