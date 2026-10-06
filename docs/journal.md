@@ -56,3 +56,7 @@ Tagged prereg-v2.2 after 5 pre-deployment reviews (data completeness, real-serve
 ## 2026-10-06 07:28 EDT (at e1b87ec)
 
 Built the pre-deployment P0 set from the five reviews: per-launch server.log; per-cell .req/.gpu/.metrics artifacts (+raw metrics text, wall-clock anchors); events.jsonl; _env bundle (pip freeze, nvidia-smi -q hashed ids, lscpu, cgroup, HF snapshot, allow-listed env only); crash bundle; detached watchdog (tested with a real SIGKILL); post-health canary; off-pod sync loop; telemetry probe; sampler jitter stats; metric stats now in the SAME window as energy. Tests re-derive the latency summary and the energy figure from the saved artifacts alone. 201 tests. NOT yet built: make figures, result-schema v3 doc/JSON schema, accuracy-parity gate wiring, per-run provenance index, NVML instant-vs-average power fields (only the defensive optional ones). Still unverified on real hardware: NVML optional fields, viol counters, watchdog nvidia-smi calls, SGLang flags, everything vLLM-side.
+
+## 2026-10-06 07:39 EDT (at 4ee48da)
+
+README rewritten for external readers (experts/recruiters): no measured numbers (none exist), novelty framed as replicate-and-extend of arXiv 2605.11999, design-principles table with file links, experiment plan + P1-P6, limitations, accurate AI disclosure. Flags for author: no LICENSE file yet; 'How this was built' needs the author's own review status; prior-work attributions (Watt Counts, ML.ENERGY, InferenceX) come from agent web research and were not independently re-verified.
