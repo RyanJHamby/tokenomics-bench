@@ -51,6 +51,10 @@ def aggregate(cells: list[dict]) -> list[dict]:
                 "goodput_tok_s": s("goodput_tok_s"),
                 "slo_attainment": s("slo_attainment"),
                 "ttft_p99": s("ttft_p99"),
+                "ttft_p99_lo": _med([(c["summary"].get("ttft_p99_ci") or [None])[0] for c in cs]),
+                "ttft_p99_hi": _med(
+                    [(c["summary"].get("ttft_p99_ci") or [None, None])[1] for c in cs]
+                ),
                 "tpot_p99": s("tpot_p99"),
                 "itl_p99": s("itl_p99"),
                 "j_per_token": _med([c["energy"]["j_per_output_token"] for c in cs]),

@@ -1,4 +1,4 @@
-.PHONY: install test lint demo estimate configs
+.PHONY: install test lint demo estimate configs figures
 install:
 	pip install -e ".[dev]"
 test:
@@ -10,6 +10,7 @@ demo:  ## synthetic end-to-end run on the mock server; output is NOT a result
 	python -m tokbench.runner configs/demo_synthetic.yaml --server mock --gpu fake \
 		--usd-per-hr 1.0 --out demo_out --quiet-server
 	python -m tokbench.report demo_out --png demo_out/frontier.png --ttft-slo 0.5
+	python -m tokbench.figures demo_out --out demo_out/figures
 
 CONFIGS = b1_capacity_pilot b2_power_clock.template b3a_fp8_capacity b3a_extra_capacity b3b_quant_fixed_load b4_graph_modes b5_overload_recovery b6_moe.template b7_sglang_crosscheck
 
@@ -21,3 +22,6 @@ estimate:  ## GPU-hours and dollars per config; PRICE=<live usd/hr>; capacity is
 
 configs:  ## regenerate configs/*.yaml from tokbench/configgen.py (never hand-edit them)
 	python -m tokbench.configgen
+
+figures:  ## publication figures from saved run data: make figures RUNS="results/raw/<a> results/raw/<b>"
+	python -m tokbench.figures $(RUNS) --out results/figures $(if $(ANALYSIS),--analysis $(ANALYSIS),)

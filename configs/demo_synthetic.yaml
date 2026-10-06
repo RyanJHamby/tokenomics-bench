@@ -9,12 +9,15 @@ variants:
   - {name: baseline, server_args: [--tpot, "0.012", --slots, "8"], slots: 8}
   - {name: faster, server_args: [--tpot, "0.008", --slots, "8"], slots: 8}
   - {name: faster-cap, server_args: [--tpot, "0.009", --slots, "8"], slots: 8, power_cap_w: 200}
+  - {name: faster-lock, server_args: [--tpot, "0.010", --slots, "8"], slots: 8, clock_lock_mhz: 1500}
 loads:
   - {mode: open, qps: 4}
   - {mode: open, qps: 12}
   - {mode: open, qps: 24}
+  - {mode: closed, concurrency: 8}
 repeats: 2
 warmup_s: 1
 measure_s: 5
 drain_s: 5
 startup_seconds: 5
+idle_s: 1
