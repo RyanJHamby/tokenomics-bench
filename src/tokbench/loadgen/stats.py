@@ -172,5 +172,38 @@ def summarize_window(
     }
 
 
+def recovery_time_s(
+    records: Sequence[RequestRecord],
+    over_end: float,
+    end: float,
+    ttft_slo: float,
+    tpot_slo: float,
+    bin_s: float = 5.0,
+    stable_bins: int = 2,
+) -> float | None:
+    """Seconds after an overload ends until service is healthy again.
+
+    Arrival-time bins of `bin_s` after `over_end`; a bin is healthy if it has requests, all
+    finished cleanly, and p99 TTFT and TPOT are within the SLO. Recovery is the start of the
+    first run of `stable_bins` consecutive healthy bins. None if that never happens (the queue
+    never drained within the observed window)."""
+    healthy = []
+    t = over_end
+    while t + bin_s <= end + 1e-9:
+        rs = [r for r in records if t <= r.t_sched < t + bin_s]
+        good = (
+            bool(rs)
+            and all(r.ok for r in rs)
+            and percentile([r.ttft for r in rs], 99) <= ttft_slo
+            and percentile([r.tpot for r in rs if r.tpot is not None] or [0.0], 99) <= tpot_slo
+        )
+        healthy.append(good)
+        t += bin_s
+    for i in range(len(healthy) - stable_bins + 1):
+        if all(healthy[i : i + stable_bins]):
+            return i * bin_s
+    return None
+
+
 def finite(x: float | None) -> bool:
     return x is not None and not math.isnan(x) and not math.isinf(x)

@@ -35,7 +35,12 @@ def server_cmd(kind: str, cfg: dict, variant: dict, port: int) -> list[str]:
     args = [str(a) for a in variant.get("server_args", [])]
     if kind == "mock":
         return [sys.executable, "-m", "tokbench.mockserver", "--port", str(port), *args]
-    return ["vllm", "serve", variant.get("model", cfg["model"]), "--port", str(port), *args]
+    model = variant.get("model", cfg["model"])
+    if variant.get("engine") == "sglang":
+        py = os.environ.get("SGLANG_PYTHON", sys.executable)  # SGLang lives in its own venv
+        return [py, "-m", "sglang.launch_server", "--model-path", model,
+                "--host", "127.0.0.1", "--port", str(port), *args]  # fmt: skip
+    return ["vllm", "serve", model, "--port", str(port), *args]
 
 
 async def wait_healthy(base: str, proc: subprocess.Popen, timeout_s: float) -> None:

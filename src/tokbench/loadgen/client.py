@@ -215,6 +215,23 @@ async def run_open_loop(
             break
         arrivals.append(t)
 
+    return await _run_arrivals(
+        url, make_body, arrivals, duration_s, drain_s, timeout_s, max_in_flight, expect_out
+    )
+
+
+async def _run_arrivals(
+    url: str,
+    make_body: PromptFn,
+    arrivals: list[float],
+    duration_s: float | None,
+    drain_s: float,
+    timeout_s: float,
+    max_in_flight: int,
+    expect_out: int | None,
+) -> tuple[list[RequestRecord], float]:
+    """Dispatch requests at the given offsets (seconds from start). With duration_s,
+    stragglers get drain_s past the end and are then cancelled as 'incomplete'."""
     records: list[RequestRecord] = []
     async with _session(timeout_s, max_in_flight) as session:
         t0 = time.perf_counter()
@@ -229,3 +246,31 @@ async def run_open_loop(
         deadline = t0 + duration_s + drain_s if duration_s is not None else None
         await _finish(tasks, deadline)
         return records, time.perf_counter() - t0
+
+
+async def run_phased_open_loop(
+    url: str,
+    make_body: PromptFn,
+    phases: list[tuple[float, float]],
+    seed: int = 0,
+    timeout_s: float = 300.0,
+    max_in_flight: int = 4096,
+    expect_out: int | None = None,
+    drain_s: float = 60.0,
+) -> tuple[list[RequestRecord], float]:
+    """Poisson arrivals with a piecewise-constant rate: phases = [(qps, duration_s), ...].
+    Used for overload-then-recovery. Latency is from the scheduled arrival, as in open loop."""
+    rng = random.Random(seed)
+    arrivals: list[float] = []
+    start = 0.0
+    for qps, dur in phases:
+        t = start
+        while True:
+            t += rng.expovariate(qps)
+            if t >= start + dur:
+                break
+            arrivals.append(t)
+        start += dur
+    return await _run_arrivals(
+        url, make_body, arrivals, start, drain_s, timeout_s, max_in_flight, expect_out
+    )

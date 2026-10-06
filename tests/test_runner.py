@@ -320,3 +320,111 @@ def test_strict_mode_rejects_cells_without_usage_or_server_metrics():
     runner._check_cell(no_usage, strict=False)  # mock/fake runs stay permissive
     with pytest.raises(CellFailed, match="metrics"):
         runner._check_cell({**ok, "server_metrics": {}}, strict=True)
+
+
+def test_per_load_workload_override_runs_at_that_shape_and_gets_its_own_cell(setup):
+    make, out = setup
+    shape = {"input_tokens": 48, "output_tokens": 4}
+    cfg = {
+        **CFG,
+        "loads": [
+            {"mode": "open", "qps": 10},
+            {"mode": "closed", "concurrency": 2, "workload": shape},
+        ],
+    }
+    assert _run(make(cfg), out) == 0
+    names = sorted(p.name for p in out.glob("v__*.json"))
+    assert names == ["v__c2-i48o4__r0.json", "v__q10__r0.json"]
+    d = json.loads((out / "v__c2-i48o4__r0.json").read_text())
+    assert d["workload"]["input_tokens"] == 48 and d["workload_ok"]
+    assert d["summary"]["mean_prompt_tokens"] == 48  # the server really saw the override
+    base = json.loads((out / "v__q10__r0.json").read_text())
+    assert base["summary"]["mean_prompt_tokens"] == 32
+
+
+def test_variant_extra_loads_run_only_for_that_variant(setup):
+    make, out = setup
+    cfg = {
+        **CFG,
+        "loads": [{"mode": "open", "qps": 10}],
+        "variants": [
+            {"name": "a", "server_args": ["--tpot", "0.004"], "slots": 4},
+            {
+                "name": "b",
+                "server_args": ["--tpot", "0.004"],
+                "slots": 4,
+                "extra_loads": [{"mode": "closed", "concurrency": 1}],
+            },
+        ],
+    }
+    assert _run(make(cfg), out) == 0
+    assert sorted(p.name for p in out.glob("*__*.json")) == [
+        "a__q10__r0.json",
+        "b__c1__r0.json",
+        "b__q10__r0.json",
+    ]
+
+
+def test_phased_overload_cell_records_phases_and_recovery(setup, tmp_path):
+    make, out = setup
+    capfile = tmp_path / "cap.json"
+    capfile.write_text(json.dumps({"m": 20.0}))  # mock: 2 slots / (0.02 s x 5 tokens) = 20 req/s
+    cfg = {
+        **CFG,
+        "capacity_file": str(capfile),
+        "workload": {"input_tokens": 16, "output_tokens": 5},
+        "warmup_s": 0,
+        "measure_s": 1,
+        "drain_s": 3,
+        "slo": {"ttft_s": 0.5, "tpot_s": 0.2},
+        "variants": [
+            {
+                "name": "m",
+                "server_args": ["--tpot", "0.02", "--slots", "2", "--prefill", "0"],
+                "slots": 2,
+            }
+        ],
+        "loads": [
+            {
+                "mode": "phased_open",
+                "phases": [
+                    {"rel": 2.0, "ref": "m", "duration_s": 2},
+                    {"rel": 0.2, "ref": "m", "duration_s": 17},
+                ],
+            }
+        ],
+    }
+    assert _run(make(cfg), out) == 0
+    d = json.loads((out / "m__phased__r0.json").read_text())
+    assert d["kind"] == "phased" and len(d["phases"]) == 2
+    over, calm = d["phases"][0]["summary"], d["phases"][1]["summary"]
+    assert over["offered_req_s"] > calm["offered_req_s"] * 3
+    assert over["slo_attainment"] < calm["slo_attainment"]  # overload misses the SLO
+    assert d["recovery_time_s"] is not None and d["recovery_time_s"] <= 10  # backlog drains
+    # phased cells never enter the open-loop frontier (mode != "open")
+    from tokbench.report import aggregate, load_cells, to_configs
+
+    assert all(c.mode == "phased_open" for c in to_configs(aggregate(load_cells(out))))
+
+
+def test_sglang_variants_launch_sglang_and_do_not_require_vllm_metrics():
+    from tokbench.server import server_cmd
+
+    cmd = server_cmd(
+        "vllm", {"model": "m"}, {"engine": "sglang", "server_args": ["--x", "1"]}, 8000
+    )
+    assert (
+        cmd[1:3] == ["-m", "sglang.launch_server"]
+        and "--model-path" in cmd
+        and cmd[-2:] == ["--x", "1"]
+    )
+    assert server_cmd("vllm", {"model": "m"}, {"server_args": []}, 8000)[:2] == ["vllm", "serve"]
+    res = {
+        "summary": {"mean_prompt_tokens": 512, "errors": [], "n_failed": 0, "n_requests": 5},
+        "server_metrics": {},
+        "workload_ok": True,
+        "client": {"client_ok": True},
+    }
+    runner._check_cell(res, strict=True, metrics_expected=False)  # SGLang: different metric names
+    with pytest.raises(CellFailed):
+        runner._check_cell(res, strict=True, metrics_expected=True)

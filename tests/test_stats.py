@@ -112,3 +112,25 @@ def test_percentile_ci_is_wide_for_small_n_and_clips_to_the_max():
     lo, hi = percentile_ci(xs, 99)
     assert hi == 200.0 and lo < 199  # p99 from 200 samples is essentially the maximum
     assert math.isnan(percentile_ci([], 99)[0])
+
+
+def test_recovery_time_is_the_start_of_the_first_stable_healthy_run_of_bins():
+    from tokbench.loadgen import recovery_time_s
+
+    def rec(t, ttft, ok=True):
+        return RequestRecord(
+            t_sched=t, t_send=t, t_first=t + ttft, t_last=t + ttft + 0.1, n_out=5, ok=ok
+        )
+
+    # overload ends at t=100. bins of 5 s: [100,105) bad, [105,110) bad, [110,115) good,
+    # [115,120) good, [120,125) good
+    recs = [rec(101, 3.0), rec(103, 4.0), rec(106, 2.5), rec(108, 2.0)] + [
+        rec(t, 0.2) for t in (111, 113, 116, 118, 121, 123)
+    ]
+    assert recovery_time_s(recs, 100.0, 125.0, ttft_slo=1.0, tpot_slo=0.5) == 10.0
+    # a lone healthy bin followed by a bad one is not recovery
+    flap = [rec(101, 3.0), rec(106, 0.2), rec(111, 3.0), rec(116, 3.0), rec(121, 3.0)]
+    assert recovery_time_s(flap, 100.0, 125.0, 1.0, 0.5) is None
+    # a failed request in a bin makes it unhealthy even with good latency
+    failed = [rec(t, 0.2) for t in (101, 106, 111, 116, 121)] + [rec(102, 0.1, ok=False)]
+    assert recovery_time_s(failed, 100.0, 125.0, 1.0, 0.5) == 5.0  # first bin unhealthy, rest fine

@@ -32,12 +32,20 @@ from .config import (
     load_config,
     load_label,
     load_order,
+    loads_for,
     per_launch_seconds,
     plan,
     read_capacity,
     resolve_loads,
 )
-from .loadgen import LoopLagMonitor, run_closed_loop, run_open_loop, summarize_window
+from .loadgen import (
+    LoopLagMonitor,
+    recovery_time_s,
+    run_closed_loop,
+    run_open_loop,
+    run_phased_open_loop,
+    summarize_window,
+)
 from .manifest import manifest
 from .power import CapUnavailable, ClockLock, PowerCap
 from .server import AttachedServer, ServerProcess, server_cmd
@@ -90,7 +98,7 @@ def launch_done(cfg: dict, out: Path, launch) -> bool:
     """A launch is done when every one of its loads has its own artifact for THIS repeat.
     (The shared capacity file must not decide this: it is keyed by variant only, so it
     would mark repeats 2..n done after repeat 1 and the pilot would lose its variance.)"""
-    for load in cfg["loads"]:
+    for load in loads_for(cfg, launch.variant):
         if load["mode"] == "capacity_search":
             try:
                 json.loads(capacity_artifact(out, launch.variant, launch.repeat).read_text())
@@ -137,8 +145,13 @@ def make_backend(args, variant: dict, load_fn):
     return NvmlBackend(args.gpu_index)
 
 
-def _body_fn(cfg: dict, variant: dict, salt: int):
-    wl = variant.get("workload", cfg["workload"])
+def workload_for(cfg: dict, variant: dict, load: dict | None = None) -> dict:
+    """Load-level override > variant override > config default."""
+    return (load or {}).get("workload") or variant.get("workload") or cfg["workload"]
+
+
+def _body_fn(cfg: dict, variant: dict, salt: int, load: dict | None = None):
+    wl = workload_for(cfg, variant, load)
     model = variant.get("model", cfg["model"])
     return make_prompt_fn(
         wl["input_tokens"],
@@ -174,10 +187,28 @@ async def measure_idle(cfg: dict, args, variant: dict) -> float | None:
     return sum(s.power_w for s in ps.samples) / len(ps.samples)
 
 
+def _phase_extras(recs, load: dict, t0: float, slo: dict) -> dict:
+    """Per-phase summaries and recovery time for an overload-then-recovery cell."""
+    out, start = [], t0
+    for ph in load["phases"]:
+        end = start + ph["duration_s"]
+        out.append(
+            {
+                "qps": ph["qps"],
+                "duration_s": ph["duration_s"],
+                "summary": summarize_window(recs, start, end, slo["ttft_s"], slo["tpot_s"]),
+            }
+        )
+        start = end
+    over_end = t0 + load["phases"][0]["duration_s"]
+    rec = recovery_time_s(recs, over_end, start, slo["ttft_s"], slo["tpot_s"])
+    return {"kind": "phased", "phases": out, "recovery_time_s": rec}
+
+
 async def run_load(
     cfg: dict, load: dict, load_idx: int, base: str, variant: dict, args, repeat: int
 ) -> dict:
-    make_body, expect = _body_fn(cfg, variant, salt_for(repeat, load_idx))
+    make_body, expect = _body_fn(cfg, variant, salt_for(repeat, load_idx), load)
     url = f"{base}/v1/completions"
     slo, drain = cfg["slo"], cfg["drain_s"]
     scraper = MetricsScraper(f"{base}/metrics", interval_s=0.5)
@@ -187,13 +218,27 @@ async def run_load(
         run = scraper.rows[-1][1].get("vllm:num_requests_running", 0) if scraper.rows else 0
         return run / slots
 
-    total = cfg["warmup_s"] + cfg["measure_s"]
+    phased = load["mode"] == "phased_open"
+    if phased:  # overload cells have no warmup: the soak already warmed the server
+        phases = [(p["qps"], p["duration_s"]) for p in load["phases"]]
+        warm, total = 0.0, sum(d for _, d in phases)
+    else:
+        warm, total = cfg["warmup_s"], cfg["warmup_s"] + cfg["measure_s"]
     lag = LoopLagMonitor()
     async with scraper, lag:
         with PowerSampler(make_backend(args, variant, fake_load), hz=SAMPLE_HZ) as power:
             t0 = time.perf_counter()
-            ws, we = t0 + cfg["warmup_s"], t0 + total
-            if load["mode"] == "closed":
+            ws, we = t0 + warm, t0 + total
+            if phased:
+                recs, _ = await run_phased_open_loop(
+                    url,
+                    make_body,
+                    phases,
+                    seed=cfg["seed"] * 31 + repeat * 7 + load_idx,
+                    expect_out=expect,
+                    drain_s=drain,
+                )
+            elif load["mode"] == "closed":
                 recs, _ = await run_closed_loop(
                     url,
                     make_body,
@@ -218,7 +263,7 @@ async def run_load(
         raise CellFailed(f"no successful requests; errors={summary['errors']}")
 
     mpt = summary["mean_prompt_tokens"]
-    wl = variant.get("workload", cfg["workload"])
+    wl = workload_for(cfg, variant, load)
     workload_ok = mpt is None or abs(mpt - wl["input_tokens"]) <= max(2, 0.01 * wl["input_tokens"])
     energy = energy_between(power.samples, ws, we)
     in_win = [s for s in power.samples if ws <= s.t <= we]
@@ -242,6 +287,7 @@ async def run_load(
         "workload_ok": workload_ok,
         "server_metrics": stats,
         "counter_deltas": counter_deltas(stats),
+        **(_phase_extras(recs, load, t0, slo) if phased else {}),
     }
 
 
@@ -260,7 +306,7 @@ def _annotate(res: dict, cfg, variant, load, load_idx, repeat, args, man, idle_w
         soak_s=cfg["soak_s"],
         synthetic=args.server == "mock" or args.gpu == "fake",
         manifest=man,
-        workload=variant.get("workload", cfg["workload"]),
+        workload=workload_for(cfg, variant, load),
         seed=cfg["seed"],
     )
     return res
@@ -278,14 +324,14 @@ def _print_cell(load: dict, res: dict) -> None:
     )
 
 
-def _check_cell(res: dict, strict: bool = False) -> None:
+def _check_cell(res: dict, strict: bool = False, metrics_expected: bool = True) -> None:
     """`strict` (real vLLM): missing usage or empty server metrics mean the measurement is
     not what it claims (workload_ok would pass vacuously), so fail instead of proceeding."""
     s = res["summary"]
     if strict:
         if s["mean_prompt_tokens"] is None:
             raise CellFailed("no usage chunk from the server: prompt length is unverified")
-        if "vllm:num_requests_running" not in res["server_metrics"]:
+        if metrics_expected and "vllm:num_requests_running" not in res["server_metrics"]:
             raise CellFailed("no vLLM /metrics scraped during the window (endpoint or name wrong)")
     if not res["client"]["client_ok"]:
         print(
@@ -306,7 +352,7 @@ def _check_cell(res: dict, strict: bool = False) -> None:
 
 async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, idle_w) -> None:
     slo, n = cfg["slo"], [0]
-    strict = args.server == "vllm"
+    strict = args.server != "mock"
 
     async def passes(q: float) -> bool:
         n[0] += 1
@@ -319,7 +365,7 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
         _annotate(res, cfg, variant, probe_load, 1000 + n[0], repeat, args, man, idle_w)
         write_atomic(cell_path(out, variant, probe_load, repeat), json.dumps(res, indent=2))
         _print_cell(probe_load, res)
-        _check_cell(res, strict)
+        _check_cell(res, strict, variant.get("engine") != "sglang")
         s = res["summary"]
         return (
             s["n_failed"] == 0 and s["ttft_p99"] <= slo["ttft_s"] and s["tpot_p99"] <= slo["tpot_s"]
@@ -336,11 +382,12 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
 
 async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
     variant = launch.variant
+    loads = loads_for(cfg, variant)
     todo = [
         i
-        for i in load_order(cfg, launch, len(cfg["loads"]))
-        if cfg["loads"][i]["mode"] == "capacity_search"
-        or not cell_done(cell_path(out, variant, cfg["loads"][i], launch.repeat))
+        for i in load_order(cfg, launch, len(loads))
+        if loads[i]["mode"] == "capacity_search"
+        or not cell_done(cell_path(out, variant, loads[i], launch.repeat))
     ]
     if launch_done(cfg, out, launch) or not todo:
         print(f"[skip] {variant['name']} r{launch.repeat}: already done", flush=True)
@@ -368,7 +415,7 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
             await soak(cfg, srv.base, variant)
             idle_w = await measure_idle(cfg, args, variant)
             for i in todo:
-                load = cfg["loads"][i]
+                load = loads[i]
                 if load["mode"] == "capacity_search":
                     await run_capacity_search(
                         cfg, load, srv.base, variant, args, launch.repeat, out, man, idle_w
@@ -380,7 +427,15 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
                     cell_path(out, variant, load, launch.repeat), json.dumps(res, indent=2)
                 )
                 _print_cell(load, res)
-                _check_cell(res, args.server == "vllm")
+                _check_cell(res, args.server != "mock", variant.get("engine") != "sglang")
+
+
+def _capacity_refs(cfg: dict) -> set[str]:
+    """Every variant name whose capacity some rel load / phase depends on."""
+    all_loads = [*cfg["loads"], *(ld for v in cfg["variants"] for ld in v.get("extra_loads", []))]
+    refs = {ld["ref"] for ld in all_loads if "ref" in ld}
+    refs |= {ph["ref"] for ld in all_loads for ph in ld.get("phases", []) if "ref" in ph}
+    return refs
 
 
 def _raise_interrupt(signum, _frame) -> None:
@@ -411,13 +466,13 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     capacity = read_capacity(cfg.get("capacity_file"))
     if capacity is None and args.dry_run and args.assume_capacity:
-        refs = {ld["ref"] for ld in cfg["loads"] if "ref" in ld}
+        refs = _capacity_refs(cfg)
         capacity = dict.fromkeys(refs, args.assume_capacity)
     cfg = resolve_loads(cfg, capacity)
     real = args.server == "vllm" and args.gpu == "nvml"
     launches = plan(cfg)
     pending = [la for la in launches if not launch_done(cfg, out, la)]
-    est = estimate_cost(cfg, args.usd_per_hr, launches=len(pending))
+    est = estimate_cost(cfg, args.usd_per_hr, launches=pending)
     print(
         f"[plan] {len(pending)}/{len(launches)} server launches pending, "
         f"~{est['gpu_hours']:.2f} GPU-h, ~${est['usd']:.2f}"

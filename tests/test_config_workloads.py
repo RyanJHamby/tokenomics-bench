@@ -5,7 +5,9 @@ from tokbench.config import (
     Launch,
     estimate_cost,
     load_config,
+    load_label,
     load_order,
+    loads_for,
     plan,
     resolve_loads,
 )
@@ -134,3 +136,57 @@ def test_salt_makes_loads_and_repeats_disjoint_so_prefix_cache_starts_cold():
 def test_prefix_share_out_of_range_rejected():
     with pytest.raises(ValueError):
         make_prompt_fn(10, 1, prefix_share=1.5)
+
+
+def test_phased_loads_validate_resolve_and_label(tmp_path):
+    phases = [
+        {"rel": 1.3, "ref": "a", "duration_s": 10},
+        {"rel": 0.5, "ref": "a", "duration_s": 20},
+    ]
+    cfg = load_config(_write(tmp_path, loads=[{"mode": "phased_open", "phases": phases}]))
+    out = resolve_loads(cfg, {"a": 10.0})
+    assert [p["qps"] for p in out["loads"][0]["phases"]] == [13.0, 5.0]
+    assert load_label(out["loads"][0]) == "phased"
+    for bad in (
+        [{"duration_s": 5, "qps": 1}],
+        [{"duration_s": 5, "qps": 1}, {"duration_s": 0, "qps": 1}],
+        [{"duration_s": 5, "qps": 1, "rel": 1, "ref": "a"}, {"duration_s": 5, "qps": 1}],
+        [{"duration_s": 5, "rel": 1}, {"duration_s": 5, "qps": 1}],
+    ):
+        with pytest.raises(ValueError):
+            load_config(_write(tmp_path, loads=[{"mode": "phased_open", "phases": bad}]))
+    with pytest.raises(ValueError, match="run the capacity block first"):
+        resolve_loads(cfg, None)
+
+
+def test_per_load_workload_override_gets_its_own_cell_label_and_validates(tmp_path):
+    shape = {"input_tokens": 128, "output_tokens": 512}
+    a = {"mode": "closed", "concurrency": 64}
+    b = {**a, "workload": shape}
+    assert load_label(a) == "c64" and load_label(b) == "c64-i128o512"
+    load_config(_write(tmp_path, loads=[a, b]))
+    for bad in (
+        {"mode": "closed", "concurrency": 4, "workload": {"input_tokens": 1}},
+        {"mode": "capacity_search", "qps_lo": 1, "qps_hi": 2, "resolution": 0.1, "workload": shape},
+    ):
+        with pytest.raises(ValueError):
+            load_config(_write(tmp_path, loads=[bad]))
+
+
+def test_variant_extra_loads_are_costed_per_variant_and_resolved(tmp_path):
+    extra = [{"mode": "open", "rel": 1.0, "ref": "a"}]
+    cfg = load_config(
+        _write(
+            tmp_path,
+            variants=[{"name": "a"}, {"name": "b", "extra_loads": extra}],
+            repeats=1,
+            startup_seconds=100,
+        )
+    )
+    cfg = resolve_loads(cfg, {"a": 4.0})
+    assert loads_for(cfg, cfg["variants"][0]) == cfg["loads"]
+    assert loads_for(cfg, cfg["variants"][1])[-1]["qps"] == 4.0
+    one = 20 + 100 + 15
+    ea = estimate_cost(cfg, 3.6, launches=[Launch(cfg["variants"][0], 0)])["gpu_hours"]
+    eb = estimate_cost(cfg, 3.6, launches=[Launch(cfg["variants"][1], 0)])["gpu_hours"]
+    assert eb - ea == pytest.approx(one / 3600)  # b's extra load, and only b's

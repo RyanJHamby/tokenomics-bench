@@ -175,3 +175,16 @@ async def test_http_error_bodies_are_kept_for_diagnosis():
     finally:
         await server.close()
     assert recs[0].error.startswith("http 400") and "out of vocab" in recs[0].error
+
+
+async def test_phased_open_loop_changes_arrival_rate_between_phases(url):
+    import time as _t
+
+    from tokbench.loadgen import run_phased_open_loop
+
+    t0 = _t.perf_counter()
+    recs, _ = await run_phased_open_loop(url, body, [(40, 1.0), (5, 2.0)], seed=2, expect_out=N_OUT)
+    first = [r for r in recs if r.t_sched - t0 < 1.0]
+    second = [r for r in recs if r.t_sched - t0 >= 1.0]
+    assert len(first) > 2 * len(second) / 2 and len(first) >= 15  # ~40/s for 1 s vs ~5/s for 2 s
+    assert 2 <= len(second) <= 25 and all(r.t_sched - t0 < 3.1 for r in recs)

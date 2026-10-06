@@ -40,13 +40,22 @@ def power_caps(p95_w: float, min_w: float, max_w: float) -> tuple[list[int], lis
     return keep, dropped
 
 
-def clock_locks(max_sm_mhz: float) -> list[int]:
-    out = []
-    for f in LOCK_FRACS:
+def clock_locks(max_sm_mhz: float, fracs: tuple[float, ...] = LOCK_FRACS) -> list[int]:
+    return [mhz for _, mhz in _lock_levels(max_sm_mhz, fracs)]
+
+
+def _lock_levels(max_sm_mhz: float, fracs: tuple[float, ...]) -> list[tuple[float, int]]:
+    """(fraction, MHz) pairs rounded to 15 MHz; a coarse rounding that collapses two
+    fractions onto one clock keeps only the first."""
+    out: list[tuple[float, int]] = []
+    for f in fracs:
         mhz = int(round(max_sm_mhz * f / CLOCK_STEP_MHZ) * CLOCK_STEP_MHZ)
-        if mhz not in out:
-            out.append(mhz)
+        if mhz not in [m for _, m in out]:
+            out.append((f, mhz))
     return out
+
+
+SHAPE_LOCK_FRACS = (0.70, 0.55)  # shape loads run on baseline + these two lock arms only
 
 
 def saturated_p95_power(pilot_dir: Path) -> float:
@@ -59,21 +68,38 @@ def saturated_p95_power(pilot_dir: Path) -> float:
     return median(vals)
 
 
-def build(template: dict, p95_w: float, info: dict) -> dict:
-    base = template["variants"][0]
+def build(
+    template: dict,
+    p95_w: float,
+    info: dict,
+    lock_fracs: tuple[float, ...] = LOCK_FRACS,
+    with_caps: bool = True,
+) -> dict:
+    base = {k: v for k, v in template["variants"][0].items() if k != "extra_loads"}
+    shape_loads = template.get("shape_loads", [])
     caps, dropped = power_caps(p95_w, info["power.min_limit"], info["power.max_limit"])
     variants = [base]
-    variants += [{**base, "name": f"cap{w}w", "power_cap_w": w} for w in caps]
-    variants += [
-        {**base, "name": f"lock{m}", "clock_lock_mhz": m}
-        for m in clock_locks(info["clocks.max.sm"])
-    ]
+    if with_caps:
+        variants += [{**base, "name": f"cap{w}w", "power_cap_w": w} for w in caps]
+    for f, mhz in _lock_levels(info["clocks.max.sm"], lock_fracs):
+        v = {**base, "name": f"lock{mhz}", "clock_lock_mhz": mhz}
+        if f in SHAPE_LOCK_FRACS:
+            v["_shape"] = True
+        variants.append(v)
+    if shape_loads:  # exploratory shape loads on baseline + the 70%/55% locks only (cost)
+        variants[0]["_shape"] = True
+    for v in variants:
+        if v.pop("_shape", False) and shape_loads:
+            v["extra_loads"] = shape_loads
+    out = {k: v for k, v in template.items() if k != "shape_loads"}
     return {
-        **template,
+        **out,
         "variants": variants,
         "derived_from": {
             "saturated_p95_w": p95_w,
             "caps_dropped_below_min": dropped,
+            "lock_fracs": list(lock_fracs),
+            "with_caps": with_caps,
             "gpu_info": info,
         },
     }
@@ -83,12 +109,26 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("pilot_dir")
     ap.add_argument("--template", required=True)
+    ap.add_argument(
+        "--locks",
+        type=float,
+        nargs="+",
+        default=list(LOCK_FRACS),
+        help="clock-lock fractions of max SM clock (default: pre-registered 0.85 0.70 0.55)",
+    )
+    ap.add_argument("--no-caps", action="store_true", help="omit power-cap arms (MoE block)")
     a = ap.parse_args(argv)
     d = Path(a.pilot_dir)
     info = json.loads((d / "manifest.json").read_text()).get("gpu_info")
     if not info:
         raise SystemExit("pilot manifest has no gpu_info (was it run on a GPU box?)")
-    cfg = build(yaml.safe_load(Path(a.template).read_text()), saturated_p95_power(d), info)
+    cfg = build(
+        yaml.safe_load(Path(a.template).read_text()),
+        saturated_p95_power(d),
+        info,
+        tuple(a.locks),
+        not a.no_caps,
+    )
     print(yaml.safe_dump(cfg, sort_keys=False, width=140))
     return 0
 
