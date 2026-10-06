@@ -69,6 +69,7 @@ from .telemetry import (
     NvmlBackend,
     PowerSampler,
     energy_between,
+    sampler_quality,
     throttle_summary,
 )
 from .workloads import make_prompt_fn, salt_for
@@ -348,6 +349,7 @@ async def run_load(
         },
         "power": throttle_summary(in_win or power.samples),
         "sampler_ok": len(power.samples) >= 0.5 * SAMPLE_HZ * (t1 - t0),
+        "sampler": sampler_quality(power.samples, SAMPLE_HZ),
         "client": lag.summary(cfg["max_client_lag_ms"]),
         "workload_ok": workload_ok,
         "server_metrics": stats,

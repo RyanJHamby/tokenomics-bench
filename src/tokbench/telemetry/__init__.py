@@ -5,6 +5,7 @@ from .gpu import (
     PowerSampler,
     energy_between,
     energy_joules,
+    sampler_quality,
     throttle_summary,
 )
 from .vllm_metrics import MetricsScraper, parse_prometheus
@@ -18,5 +19,6 @@ __all__ = [
     "energy_between",
     "energy_joules",
     "parse_prometheus",
+    "sampler_quality",
     "throttle_summary",
 ]

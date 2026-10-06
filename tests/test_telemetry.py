@@ -121,3 +121,18 @@ def test_prometheus_histogram_buckets_are_not_summed():
     )
     assert "h_bucket" not in m and "h_created" not in m
     assert m["h_sum"] == 3.5 and m["h_count"] == 9
+
+
+def test_sampler_quality_counts_gaps_and_stale_counter_reads():
+    from tokbench.telemetry import sampler_quality
+
+    ts = [0.0, 0.1, 0.2, 0.3, 0.9, 1.0]  # a 0.6 s gap: a dropped stretch at 10 Hz
+    samples = [
+        GpuSample(t=t, power_w=100, energy_mj=e)
+        for t, e in zip(ts, [0, 0, 5, 5, 9, 12], strict=True)
+    ]
+    q = sampler_quality(samples, hz=10)
+    assert q["n"] == 6 and q["dropped"] == 1
+    assert q["dt_ms_max"] == pytest.approx(600) and q["dt_ms_p50"] == pytest.approx(100, abs=1)
+    assert q["stale_frac"] == pytest.approx(2 / 5)  # two of five consecutive pairs repeat
+    assert sampler_quality(samples[:1], 10)["dt_ms_max"] is None

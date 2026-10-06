@@ -32,6 +32,29 @@ Preflight checks, among others: pinned vLLM, driver >= 580, NVML energy counter,
 every flag the configs use, vCPU count, and a checksummed GSM8K file. If a check fails, fix it or
 record a deviation; do not work around it silently.
 
+## What gets saved, and what protects the run
+- **Per cell**: `<cell>.json` (summary), `.req.jsonl.gz` (every request), `.gpu.csv.gz` (the full
+  sample series), `.metrics.jsonl.gz` + `.metrics.raw.txt.gz` (vLLM series; raw keeps labels and
+  histogram buckets). **Per launch**: `launches/<variant>__r<k>/server.log`, `launch.json` (wall +
+  monotonic anchors, canary result), `soak.req.jsonl.gz`, `idle.gpu.csv.gz`, and `crash/` on failure.
+  **Per run**: `events.jsonl`, `manifest.json`, `_env/` (pip freeze, `nvidia-smi -q` with identifiers
+  hashed, lscpu, cgroup, HF cache snapshot, allow-listed env, never secrets). Expect ~100-250 MB for
+  the whole plan: **do not commit it to git**; ship it as release assets. Re-derivation tests prove the
+  summary and energy can be recomputed from these files alone.
+- **Watchdog** (on by default for real GPU runs): a detached process resets clocks and the DEFAULT power
+  limit and kills orphaned server process groups if the runner is SIGKILLed, OOM-killed or hangs.
+  Check `results/raw/<stamp>-<block>/watchdog.log` after any abnormal end.
+- **Canary**: after `/health` every launch sends one tiny completion and requires exact
+  `usage.prompt_tokens` and (vLLM) `/metrics`; a broken server fails here, not 10 minutes into a soak.
+- **Off-pod sync**: in a third tmux pane, `SYNC_DEST=<dir> scripts/sync_loop.sh results` (or
+  `SYNC_RELEASE=<tag>`, which needs a repo-scoped token on the pod: use a fine-grained one and revoke it).
+  A terminated pod then loses at most a minute. The pod cannot sign commits: pull the tarballs to the laptop,
+  extract, and make the signed commit there.
+- **Preflight log**: run `scripts/preflight.sh 2>&1 | tee results/preflight/preflight.log`; it also
+  writes `results/preflight/telemetry_probe.json` (which optional NVML fields, DCGM and RAPL this pod exposes).
+- **After the first real launch (a 2-minute smoke cell), check by hand** that `server.log`, the `.req`,
+  `.gpu`, `.metrics` files and `launch.json` (with a passing canary) are all non-empty before starting B1.
+
 ## Order of operations (dependency order; stop when money runs short)
 First, a ~10 GPU-minute validation of the load generator against vLLM's own benchmark on the
 same server: `PRICE=<live> scripts/crosscheck.sh`. A DISAGREE verdict means a client-side artefact

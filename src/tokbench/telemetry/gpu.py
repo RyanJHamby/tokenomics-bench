@@ -224,3 +224,29 @@ def _or_all(xs) -> int:
     for x in xs:
         v |= x
     return v
+
+
+def sampler_quality(samples: Sequence[GpuSample], hz: float) -> dict:
+    """How well the sampler kept its schedule. The sampler thread shares a process (and the GIL)
+    with the asyncio load generator, so jitter is plausible; a window with large gaps has less
+    trustworthy energy by integration (the counter delta is unaffected). Stale reads (identical
+    energy counter on consecutive samples) show the counter's own update period."""
+    if len(samples) < 2:
+        return {"n": len(samples), "dt_ms_p50": None, "dt_ms_p99": None, "dt_ms_max": None,
+                "dropped": 0, "stale_frac": None}  # fmt: skip
+    dts = sorted(b.t - a.t for a, b in pairwise(samples))
+    period = 1.0 / hz
+    energies = [s.energy_mj for s in samples if s.energy_mj is not None]
+    stale = (
+        sum(1 for a, b in pairwise(energies) if a == b) / max(1, len(energies) - 1)
+        if energies
+        else None
+    )
+    return {
+        "n": len(samples),
+        "dt_ms_p50": dts[len(dts) // 2] * 1000,
+        "dt_ms_p99": dts[min(len(dts) - 1, int(0.99 * len(dts)))] * 1000,
+        "dt_ms_max": dts[-1] * 1000,
+        "dropped": sum(1 for d in dts if d > 2 * period),  # gaps of more than two periods
+        "stale_frac": stale,
+    }
