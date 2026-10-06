@@ -1,4 +1,4 @@
-# Amendments to pre-registration v2 (A1-A6 tag `prereg-v2.1`; A7-A13 tag `prereg-v2.2`)
+# Amendments to pre-registration v2 (A1-A6 tag `prereg-v2.1`; A7-A13 tag `prereg-v2.2`; A14 recorded after)
 
 Made **before any GPU run**; no measurement data existed. Each tightens or corrects the plan
 and none depends on an outcome. [`PREREG-v2.md`](PREREG-v2.md) (tag `prereg-v2`) is left
@@ -27,8 +27,10 @@ outcome-dependent.
 | A9 | The `fp8-kv8` arm is labelled a **kernel + dtype confound**: FlashAttention has no fp8 KV on SM89, so enabling it changes the attention backend (FlashInfer). It is exploratory. | A pure KV-dtype effect cannot be claimed. |
 | A10 | Measurement fixes found by running the client against a real server: the final token can arrive in an empty-text chunk with `finish_reason` (`t_last` now moves to it); real-vLLM cells **fail** if no `usage` chunk or no vLLM `/metrics` arrived; the prefix-cache hit rate uses exact metric names (a substring match picked the always-zero `external_*` counters). | These would have silently understated TPOT, passed an unverified workload, and dropped the B2 hit rate. |
 | A11 | v2 states prefix caching "defaults ON in vLLM V1". Sources conflict. Configs pass the explicit flag, so results are unaffected; the statement is to be corrected from the server's actual default (recorded at preflight). | Do not assert what has not been verified. |
-| A12 | **Novelty framing:** the lock-beats-cap-on-decode result is already reported by "The Illusion of Power Capping in LLM Decode" (arXiv 2605.11999, H200, ~4B dense models, no SLO or goodput). This work **replicates and extends** it on GDDR6 Ada with an 8B model, adds an SLO and goodput-per-dollar layer, an MoE arm, and pre-registered equivalence tests. It is not claimed as first. | The landscape review located the prior art. |
+| A12 | **Novelty framing:** the lock-beats-cap-on-decode result is already reported by "The Illusion of Power Capping in LLM Decode" (arXiv 2605.11999: one H200, vLLM, BF16, four ~4B dense attention variants, batch 1-32; verified against the full text on 2026-10-06; it reports no SLO or goodput metric and releases no code). This work **replicates and extends** it on GDDR6 Ada with an 8B model, adds an SLO and goodput-per-dollar layer, an MoE arm, and pre-registered equivalence tests. It is not claimed as first. | The landscape review located the prior art. |
 | A13 | **Pre-run risk notes, not changes to claims.** By the repo's own roofline model, prefill is ~59% of saturated time at 512/128, so P2 (lock70 costs no goodput) may fail by construction, and P3 (cap80 does not bind) may fail because a cap can bind during prefill bursts. Both stay as stated and will be reported as measured. | Recording the failure risk before the data prevents a post hoc rewrite. |
+
+| A14 | **Hardware figures verified.** The prediction model's L40S and H100-SXM figures were checked against NVIDIA's product pages on 2026-10-06 (the pages list sparsity figures; the dense values used are half). The H100-PCIe entry is still unverified (the page shows NVL). v2's statement that the figures are unverified recollections is superseded for L40S and H100-SXM. | Closes the open datasheet check. No prediction value changed. |
 
 Not changed (both rounds): hypotheses P1-P6 and their margins, the primary SLO, the statistical procedure,
 the budget cap, and the stopping rule.

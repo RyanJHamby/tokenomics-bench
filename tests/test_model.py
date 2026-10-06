@@ -46,10 +46,14 @@ def test_interval_brackets_the_point_estimate_and_h100_beats_l40s():
     assert h100 > 2 * pt
 
 
-def test_rendered_predictions_flag_unverified_hardware_and_are_reproducible():
-    md = m.render_markdown()
-    assert "unverified" in md.lower() and "Committed before any GPU run" in md
+def test_rendered_predictions_state_what_is_verified_and_what_is_not():
+    md = m.render_markdown()  # L40S: checked against NVIDIA's page on 2026-10-06
+    assert "Committed before any GPU run" in md and "**verified**" in md and "2026-10-06" in md
+    assert "unverified" not in md.lower()
     assert md == m.render_markdown()
+    pcie = m.render_markdown("H100-PCIe")  # not checked (the page lists NVL, not PCIe)
+    assert "unverified recollections" in pcie and "**verified**" not in pcie
+    assert m.HARDWARE["H100-SXM"].verified and not m.HARDWARE["H100-PCIe"].verified
 
 
 def test_slo_capacity_is_below_saturation_and_monotone_in_the_slo():
