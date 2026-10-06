@@ -1,4 +1,4 @@
-# Amendments to pre-registration v2 (tag `prereg-v2.1`)
+# Amendments to pre-registration v2 (A1-A6 tag `prereg-v2.1`; A7-A13 tag `prereg-v2.2`)
 
 Made **before any GPU run**; no measurement data existed. Each tightens or corrects the plan
 and none depends on an outcome. [`PREREG-v2.md`](PREREG-v2.md) (tag `prereg-v2`) is left
@@ -13,5 +13,22 @@ unedited; where the two differ, this file governs. Rationale and dates are in th
 | A5 | Validity rules | Add: a cell is invalid if the load generator's event-loop **lag p99 exceeds 10 ms** (client saturation). | A saturated client mimics server latency. Also added a cross-check of the load generator against `vllm bench serve` with fixed tolerances. |
 | A6 | `PREDICTIONS.md` SLO capacity "0.70-0.90 x saturation" | SLO capacity from a TPOT-under-load model (regenerated). | The TPOT SLO binds before saturation on this GPU; the old rule was a hand-wave. |
 
-Not changed: hypotheses P1-P6 and their margins, the primary SLO, the statistical procedure,
+## Second round (tag `prereg-v2.2`), after the pre-deployment review
+
+Five further independent reviews (single-deployment data completeness, real-server protocol
+conformance, landscape of professional benchmark projects, model/workload choice, energy and
+compute telemetry) were run before deployment. Still before any GPU run; still none
+outcome-dependent.
+
+| # | Change | Why |
+|---|---|---|
+| A7 | Every engine setting vLLM would otherwise pick by GPU or version is **pinned** in every config: `--dtype float16`, `--generation-config vllm`, `--max-num-seqs 256`, `--max-num-batched-tokens 2048`, `--seed 0`, async scheduling and chunked prefill on, `--attention-backend FLASH_ATTN`, and model + tokenizer **revision SHAs**. Configs are now generated from `tokbench/configgen.py` and a test fails on drift. | Defaults differ by GPU (L40S 256/2048 vs H100 1024/8192) and by checkpoint dtype (`auto` ran Llama in bf16 while AWQ would run fp16). The baseline arm is now byte-identical everywhere it is reused. |
+| A8 | **Exploratory** blocks added, run only after the core blocks and only if budget remains: shape loads (decode-heavy 128/512 and prefill-heavy 2048/32) on the baseline and the 70% / 55% lock arms; overload-then-recovery (B5); a Qwen3-30B-A3B-FP8 MoE arm (B6); an SGLang cross-check (B7). **No confirmatory claim** rests on any of them. | The reviews found the 512/128 headline shape is prefill-heavy (about 59% of saturated GPU time by the repo's own model), so the lock-vs-cap result may flip with shape; the MoE and engine arms test generality. Total plan is about 18.2 GPU-hours, so these are the first things the budget guard cuts. |
+| A9 | The `fp8-kv8` arm is labelled a **kernel + dtype confound**: FlashAttention has no fp8 KV on SM89, so enabling it changes the attention backend (FlashInfer). It is exploratory. | A pure KV-dtype effect cannot be claimed. |
+| A10 | Measurement fixes found by running the client against a real server: the final token can arrive in an empty-text chunk with `finish_reason` (`t_last` now moves to it); real-vLLM cells **fail** if no `usage` chunk or no vLLM `/metrics` arrived; the prefix-cache hit rate uses exact metric names (a substring match picked the always-zero `external_*` counters). | These would have silently understated TPOT, passed an unverified workload, and dropped the B2 hit rate. |
+| A11 | v2 states prefix caching "defaults ON in vLLM V1". Sources conflict. Configs pass the explicit flag, so results are unaffected; the statement is to be corrected from the server's actual default (recorded at preflight). | Do not assert what has not been verified. |
+| A12 | **Novelty framing:** the lock-beats-cap-on-decode result is already reported by "The Illusion of Power Capping in LLM Decode" (arXiv 2605.11999, H200, ~4B dense models, no SLO or goodput). This work **replicates and extends** it on GDDR6 Ada with an 8B model, adds an SLO and goodput-per-dollar layer, an MoE arm, and pre-registered equivalence tests. It is not claimed as first. | The landscape review located the prior art. |
+| A13 | **Pre-run risk notes, not changes to claims.** By the repo's own roofline model, prefill is ~59% of saturated time at 512/128, so P2 (lock70 costs no goodput) may fail by construction, and P3 (cap80 does not bind) may fail because a cap can bind during prefill bursts. Both stay as stated and will be reported as measured. | Recording the failure risk before the data prevents a post hoc rewrite. |
+
+Not changed (both rounds): hypotheses P1-P6 and their margins, the primary SLO, the statistical procedure,
 the budget cap, and the stopping rule.

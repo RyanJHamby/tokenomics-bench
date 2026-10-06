@@ -5,7 +5,11 @@
 #   scripts/run_all.sh b1            # pilot + capacity (also the variance estimate)
 #   python -m tokbench.pilot results/raw/<STAMP>-b1   # sizes later blocks
 #   scripts/run_all.sh b2gen         # generate B2 arms from the pilot; COMMIT the result
-#   scripts/run_all.sh b2 b3a b3b b4
+#   scripts/run_all.sh b2 b3a b3b b4          # core blocks (confirmatory)
+#   scripts/run_all.sh b5                     # EXPLORATORY: overload + recovery
+#   B1_DIR=... scripts/run_all.sh b6gen       # EXPLORATORY: MoE arms from the pilot; commit, then b6
+#   scripts/setup_sglang.sh && scripts/run_all.sh b7   # EXPLORATORY, last: SGLang cross-check
+# Run exploratory blocks only after the core blocks finish and only if budget remains.
 #
 # Resumable: re-run with the SAME STAMP and finished cells are skipped:
 #     STAMP=20261012-0900 PRICE=0.99 scripts/run_all.sh b3b
@@ -17,7 +21,7 @@ if [ -z "${TMUX:-}" ] && [ -z "${STY:-}" ] && [ "${ALLOW_NO_MUX:-0}" != 1 ]; the
 fi
 . .venv/bin/activate
 STAMP=${STAMP:-$(date +%Y%m%d-%H%M)}
-[ $# -gt 0 ] && blocks=("$@") || { echo "usage: run_all.sh <block...>  (b1 b2gen b2 b3a b3b b4)"; exit 2; }
+[ $# -gt 0 ] && blocks=("$@") || { echo "usage: run_all.sh <block...>  (b1 b2gen b2 b3a b3b b4 b5 b6gen b6 b7)"; exit 2; }
 mkdir -p results/capacity
 python -m tokbench.budget status
 
@@ -51,6 +55,19 @@ for b in "${blocks[@]}"; do
       done
       run b3b configs/b3b_quant_fixed_load.yaml ;;
     b4) run b4 configs/b4_graph_modes.yaml ;;
+    b5) run b5 configs/b5_overload_recovery.yaml ;;
+    b6gen)
+      : "${B1_DIR:?set B1_DIR to the pilot raw dir}"
+      python -m tokbench.arms "$B1_DIR" --template configs/b6_moe.template.yaml --locks 0.70 --no-caps > configs/b6_moe.yaml
+      echo "Generated configs/b6_moe.yaml. COMMIT IT (signed) before running b6." ;;
+    b6)
+      git ls-files --error-unmatch configs/b6_moe.yaml >/dev/null 2>&1 \
+        && git diff --quiet -- configs/b6_moe.yaml \
+        || { echo "configs/b6_moe.yaml is missing, untracked or modified: run b6gen and commit it first"; exit 2; }
+      run b6 configs/b6_moe.yaml ;;
+    b7)
+      [ -x .venv-sglang/bin/python ] || { echo "run scripts/setup_sglang.sh first"; exit 2; }
+      SGLANG_PYTHON=$PWD/.venv-sglang/bin/python run b7 configs/b7_sglang_crosscheck.yaml ;;
     *) echo "unknown block $b"; exit 2 ;;
   esac
 done

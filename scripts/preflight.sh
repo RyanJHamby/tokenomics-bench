@@ -62,7 +62,7 @@ sys.exit(1 if bad else 0)
 PY
 
 help=$(vllm serve --help=all 2>&1 || vllm serve --help 2>&1)
-for f in enable-prefix-caching enforce-eager quantization max-model-len gpu-memory-utilization kv-cache-dtype compilation-config; do
+for f in enable-prefix-caching enforce-eager quantization max-model-len gpu-memory-utilization kv-cache-dtype compilation-config dtype generation-config max-num-seqs max-num-batched-tokens seed attention-backend async-scheduling enable-chunked-prefill revision tokenizer-revision; do
   echo "$help" | grep -q -- "--$f" && ok "flag --$f" || bad "flag --$f not found in this vLLM"
 done
 echo "$help" | grep -q -- "--no-enable-prefix-caching" && ok "flag --no-enable-prefix-caching" \
@@ -89,14 +89,25 @@ sys.exit(1 if bad else 0)
 PY
 
 [ -n "${HF_TOKEN:-}" ] && ok "HF_TOKEN set" || bad "HF_TOKEN not set"
+# Every (model, revision) the configs pin must still resolve, and the token must see the gated one.
 python - <<'PY' || fail=1
-import os, sys
-try:
-    from huggingface_hub import model_info
-    model_info("meta-llama/Llama-3.1-8B-Instruct", token=os.environ.get("HF_TOKEN"))
-    print("ok    model access")
-except Exception as e:
-    print("FAIL  model access:", type(e).__name__); sys.exit(1)
+import glob, os, sys, yaml
+from huggingface_hub import model_info
+pairs = set()
+for f in glob.glob("configs/*.yaml"):
+    cfg = yaml.safe_load(open(f))
+    for v in cfg.get("variants", []):
+        a = v.get("server_args", [])
+        if "--revision" in a:
+            pairs.add((v.get("model", cfg["model"]), a[a.index("--revision") + 1]))
+bad = 0
+for model, rev in sorted(pairs):
+    try:
+        info = model_info(model, revision=rev, token=os.environ.get("HF_TOKEN"))
+        print(f"ok    {model}@{rev[:8]} resolves")
+    except Exception as e:
+        print(f"FAIL  {model}@{rev[:8]}: {type(e).__name__}"); bad = 1
+sys.exit(bad)
 PY
 
 cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)

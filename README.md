@@ -3,6 +3,8 @@
 **Status: harness built and pre-registered; no GPU results yet, so this README quotes no
 numbers.** The hardware measurements are the next step, under a hard $60 total budget.
 
+Prior work ("The Illusion of Power Capping in LLM Decode", arXiv 2605.11999) already shows clock locking beating power capping for decode on an H200. This repo **replicates and extends** that: GDDR6 Ada (L40S), an 8B model, an SLO and goodput-per-dollar layer, a mixed prefill/decode workload, an MoE arm, and pre-registered equivalence tests.
+
 On one GPU serving Llama-3.1-8B, what is the frontier of **goodput per dollar** and
 **goodput per joule** under a p99 latency SLO, and which knob moves it: an SM **clock lock**,
 a **power cap**, quantization, or CUDA-graph mode? The sharp question is whether a clock lock

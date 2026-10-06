@@ -9,8 +9,10 @@ surprise (`pow log`), including failures. Hard spend cap: **$60 across all attem
    the preflight probes this, but cheaper to ask first). Full-VM providers are likelier than
    serverless. On-demand, not interruptible. Primary GPU: L40S (FP8-capable, 350 W).
 2. Check the **live** $/hr. `make estimate PRICE=<live rate>` prints GPU-hours and dollars per
-   block (the B2 template shows 1 of 8 arms: multiply its figure by 8; planned total is about
-   13.7 GPU-hours before retries). Compare to remaining budget: `python -m tokbench.budget status`.
+   block (the B2 template shows 1 of 8 arms and B6 1 of 2: multiply). Planned total is about
+   14.7 GPU-hours for the core blocks and **about 18.2 with the exploratory blocks** (shape loads,
+   overload/recovery, MoE, SGLang), before retries. At ~$1/h that is ~$18; at ~$2.7/h ~$49, which
+   leaves no retry cover, so on an H100-priced pod run the core blocks only. Compare to remaining budget: `python -m tokbench.budget status`.
 3. **Set a spending limit on the provider side.** The in-repo ledger is a guard, not
    enforcement: it cannot see the provider's bill.
 4. If the GPU is not an L40S, regenerate `docs/PREDICTIONS.md` for it
@@ -39,7 +41,12 @@ PRICE=<live> scripts/run_all.sh b1                     # pilot: capacity, batch-
 python -m tokbench.pilot results/raw/<STAMP>-b1        # launches needed per margin
 B1_DIR=results/raw/<STAMP>-b1 PRICE=<live> scripts/run_all.sh b2gen
 git add configs/b2_power_clock.yaml && git commit -S -m "B2 arms from pilot"   # BEFORE b2 runs
-PRICE=<live> scripts/run_all.sh b2 b3a b3b b4
+PRICE=<live> scripts/run_all.sh b2 b3a b3b b4          # core, confirmatory
+# exploratory, ONLY after the core blocks finish and only if budget remains (first to be cut):
+PRICE=<live> scripts/run_all.sh b5                      # overload + recovery
+B1_DIR=results/raw/<STAMP>-b1 scripts/run_all.sh b6gen  # then commit configs/b6_moe.yaml
+PRICE=<live> scripts/run_all.sh b6                      # Qwen3-30B-A3B-FP8 MoE
+scripts/setup_sglang.sh && PRICE=<live> scripts/run_all.sh b7   # SGLang (unverified flags)
 ```
 After the pilot, compare `required_repeats` to the plan. If the budget cannot afford the repeats
 a margin needs, **widen** that margin (documented in the journal) rather than shrinking repeats
