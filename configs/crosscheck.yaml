@@ -1,16 +1,22 @@
-# Cross-check of tokbench's load generator vs `vllm bench serve` on the same running server.
-# Run via scripts/crosscheck.sh (attaches to a server it starts). Not a result block.
+# Cross-check of tokbench's load generator vs `vllm bench serve` on the same running server
+# (scripts/crosscheck.sh). Not a result block.
 name: crosscheck
-block: XCHECK
 model: meta-llama/Llama-3.1-8B-Instruct
 seed: 0
+startup_seconds: 240
+soak_s: 60
+idle_s: 10
 slo: {ttft_s: 1.0, tpot_s: 0.05}
+block: XCHECK
 workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
-variants:
-  - {name: fp16-default, server_args: [--max-model-len, "4096", --gpu-memory-utilization, "0.90", --no-enable-prefix-caching]}
-loads:
-  - {mode: open, qps: 4}
 repeats: 1
 warmup_s: 20
 measure_s: 120
-startup_seconds: 240
+variants:
+- name: fp16-default
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659]
+loads:
+- {mode: open, qps: 4}

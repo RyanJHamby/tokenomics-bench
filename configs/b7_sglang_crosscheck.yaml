@@ -1,0 +1,28 @@
+# B7 (EXPLORATORY, UNVERIFIED FLAGS, run LAST): one SGLang FP16 variant on the same workload and SLO as the
+# vLLM baseline, for a labelled engine cross-check. SGLang flag names were NOT checked against a source tree
+# (none available offline); `scripts/setup_sglang.sh` + preflight must confirm each before this runs.
+# Fairness: same dtype, max length, prefix cache off (radix off), scheduler limits, chunked-prefill size,
+# token-id prompts, greedy + ignore_eos. Not a claim about which engine is faster.
+name: b7_sglang_crosscheck
+model: meta-llama/Llama-3.1-8B-Instruct
+seed: 0
+startup_seconds: 300
+soak_s: 60
+idle_s: 10
+slo: {ttft_s: 1.0, tpot_s: 0.05}
+capacity_file: results/capacity/capacity.json
+block: B7
+workload: {input_tokens: 512, output_tokens: 128, prefix_share: 0.0}
+repeats: 2
+warmup_s: 30
+measure_s: 60
+variants:
+- name: sglang-fp16
+  model: meta-llama/Llama-3.1-8B-Instruct
+  engine: sglang
+  server_args: [--context-length, '4096', --mem-fraction-static, '0.88', --dtype, float16, --max-running-requests, '256', --chunked-prefill-size, '2048',
+    --disable-radix-cache, --revision, 0e9e39f249a16976918f6564b8830bc894c89659, --enable-metrics]
+loads:
+- {mode: capacity_search, qps_lo: 1, qps_hi: 32, resolution: 0.08}
+- {mode: closed, concurrency: 1}
+- {mode: closed, concurrency: 64}

@@ -1,6 +1,6 @@
-# B4: CUDA graph modes. 'graphs-none-compile-on' isolates graph capture from torch.compile (--enforce-eager disables both,
-# so 'eager' is a separate, coarser arm). Closed loop pins batch size; the metric is TPOT/ITL. Hypothesis: the graph
-# benefit is largest at low batch (launch-overhead-bound) and shrinks with batch.
+# B4: CUDA graph modes. 'graphs-none-compile-on' isolates graph capture from torch.compile (--enforce-eager
+# disables both, so 'eager' is a separate, coarser arm). Closed loop pins batch size; metric is TPOT/ITL.
+# The effective cudagraph mode is read back from the server log and the cell fails if it was downgraded.
 name: b4_graph_modes
 model: meta-llama/Llama-3.1-8B-Instruct
 seed: 0
@@ -16,13 +16,25 @@ warmup_s: 20
 measure_s: 60
 variants:
 - name: graphs-none-compile-on
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "NONE"}']
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --compilation-config, '{"cudagraph_mode": "NONE"}']
 - name: graphs-piecewise
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "PIECEWISE"}']
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --compilation-config, '{"cudagraph_mode": "PIECEWISE"}']
 - name: graphs-full-and-piecewise
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --compilation-config, '{"cudagraph_mode": "FULL_AND_PIECEWISE"}']
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --compilation-config, '{"cudagraph_mode": "FULL_AND_PIECEWISE"}']
 - name: eager
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --enforce-eager]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --enforce-eager]
 loads:
 - {mode: closed, concurrency: 1}
 - {mode: closed, concurrency: 8}

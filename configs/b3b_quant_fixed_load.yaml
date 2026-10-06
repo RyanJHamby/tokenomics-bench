@@ -1,5 +1,5 @@
-# B3b: all variants at EQUAL absolute offered load (fractions of FP16's capacity) plus batch-1 and saturation, 3 launches
-# each, for paired per-launch comparisons. Quality: full 1319-item GSM8K, paired McNemar/TOST vs FP16 (tokbench.gates).
+# B3b: variants at EQUAL absolute offered load (fractions of FP16 capacity) plus batch-1 and saturation,
+# 3 launches each, for paired comparisons. Quality: full GSM8K, paired McNemar/TOST vs FP16.
 name: b3b_quant_fixed_load
 model: meta-llama/Llama-3.1-8B-Instruct
 seed: 0
@@ -15,14 +15,25 @@ warmup_s: 30
 measure_s: 180
 variants:
 - name: fp16-default
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659]
 - name: fp8
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --quantization, fp8]
 - name: fp8-kv8
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8, --kv-cache-dtype, fp8]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASHINFER, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --quantization, fp8, --kv-cache-dtype, fp8]
 - name: awq-int4
   model: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, awq_marlin]
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, db1f81ad4b8c7e39777509fac66c652eb0a52f91,
+    --tokenizer-revision, db1f81ad4b8c7e39777509fac66c652eb0a52f91, --quantization, awq_marlin]
 loads:
 - {mode: closed, concurrency: 1}
 - {mode: open, rel: 0.5, ref: fp16-default}

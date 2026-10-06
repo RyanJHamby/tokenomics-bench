@@ -1,9 +1,10 @@
-# B2 TEMPLATE (core finding): power cap (-pl) vs SM clock lock (-lgc) vs baseline, FP16. Do not run directly:
-# `python -m tokbench.arms <pilot dir> --template configs/b2_power_clock.template.yaml > configs/b2_power_clock.yaml`
-# fills the arms from the pilot's measured saturated power and the card's limits (pre-registered rule).
-# Loads: saturation (c=64) and 70% of the BASELINE capacity (equal absolute offered load for every arm), so
-# J/token is compared at the same work. Primary question: does the energy-optimal clock differ from the
-# $/Mtok-optimal one, and does a cap ever bind during decode?
+# B2 TEMPLATE (core finding): power cap (-pl) vs SM clock lock (-lgc) vs baseline, FP16. Do not run
+# directly: `python -m tokbench.arms <pilot dir> --template configs/b2_power_clock.template.yaml >
+# configs/b2_power_clock.yaml` fills the arms from the pilot's measured saturated power and the card's limits.
+# Main loads: saturation (c=64) and 0.7 x baseline capacity. `shape_loads` (EXPLORATORY) are added by the
+# generator only to the baseline and the 70% / 55% lock arms (not all 8): decode-heavy 128/512 and
+# prefill-heavy 2048/32, to test whether lock-vs-cap flips with workload shape and to make the
+# prefill-vs-decode energy regression identifiable.
 name: b2_power_clock.template
 model: meta-llama/Llama-3.1-8B-Instruct
 seed: 0
@@ -19,7 +20,17 @@ warmup_s: 30
 measure_s: 180
 variants:
 - name: uncapped
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659]
 loads:
 - {mode: closed, concurrency: 64}
 - {mode: open, rel: 0.7, ref: fp16-default}
+shape_loads:
+- mode: closed
+  concurrency: 64
+  workload: {input_tokens: 128, output_tokens: 512, prefix_share: 0.0}
+- mode: closed
+  concurrency: 16
+  workload: {input_tokens: 2048, output_tokens: 32, prefix_share: 0.0}

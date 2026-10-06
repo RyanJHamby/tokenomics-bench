@@ -1,5 +1,6 @@
-# B3a-extra (EXPLORATORY, no significance claims): capacity of fp8-kv8 and AWQ-INT4, 1 launch each. AWQ is a third-party
-# checkpoint: a model change AND a precision change; say so when quoting.
+# B3a-extra (EXPLORATORY): capacity of fp8-kv8 and AWQ-INT4, 1 launch each. fp8-kv8 changes the ATTENTION
+# BACKEND as well as the KV dtype (FlashAttention has no fp8 KV on SM89): a kernel+dtype confound, labelled
+# as such. AWQ is a third-party checkpoint: a model change AND a precision change.
 name: b3a_extra_capacity
 model: meta-llama/Llama-3.1-8B-Instruct
 seed: 0
@@ -15,9 +16,14 @@ warmup_s: 30
 measure_s: 60
 variants:
 - name: fp8-kv8
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, fp8, --kv-cache-dtype, fp8]
+  model: meta-llama/Llama-3.1-8B-Instruct
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASHINFER, --revision, 0e9e39f249a16976918f6564b8830bc894c89659,
+    --tokenizer-revision, 0e9e39f249a16976918f6564b8830bc894c89659, --quantization, fp8, --kv-cache-dtype, fp8]
 - name: awq-int4
   model: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
-  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --no-enable-prefix-caching, --quantization, awq_marlin]
+  server_args: [--max-model-len, '4096', --gpu-memory-utilization, '0.90', --dtype, float16, --generation-config, vllm, --max-num-seqs, '256', --max-num-batched-tokens,
+    '2048', --seed, '0', --async-scheduling, --enable-chunked-prefill, --no-enable-prefix-caching, --attention-backend, FLASH_ATTN, --revision, db1f81ad4b8c7e39777509fac66c652eb0a52f91,
+    --tokenizer-revision, db1f81ad4b8c7e39777509fac66c652eb0a52f91, --quantization, awq_marlin]
 loads:
 - {mode: capacity_search, qps_lo: 1, qps_hi: 64, resolution: 0.08}
