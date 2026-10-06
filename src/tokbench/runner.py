@@ -27,6 +27,17 @@ from pathlib import Path
 
 from . import budget
 from .capacity import find_capacity, update_capacity_file
+from .capture import (
+    Anchor,
+    EventLog,
+    allowlisted_env,
+    capture_env,
+    write_crash_bundle,
+    write_gpu_series,
+    write_metrics_series,
+    write_raw_metrics,
+    write_requests,
+)
 from .config import (
     estimate_cost,
     load_config,
@@ -163,13 +174,14 @@ def _body_fn(cfg: dict, variant: dict, salt: int, load: dict | None = None):
     ), wl["output_tokens"]
 
 
-async def soak(cfg: dict, base: str, variant: dict) -> None:
-    """Unrecorded saturating load: finishes compile/graph warm-up and brings the GPU to a
-    steady thermal state, so the first measured load is not systematically cold."""
+async def soak(cfg: dict, base: str, variant: dict) -> list:
+    """Unmeasured saturating load: finishes compile/graph warm-up and brings the GPU to a
+    steady thermal state, so the first measured load is not systematically cold. Its records
+    are returned and persisted (cold-start behaviour is data), never used in any summary."""
     if cfg["soak_s"] <= 0:
-        return
+        return []
     make_body, expect = _body_fn(cfg, variant, SOAK_SALT)
-    await run_closed_loop(
+    recs, _ = await run_closed_loop(
         f"{base}/v1/completions",
         make_body,
         cfg["soak_concurrency"],
@@ -177,14 +189,18 @@ async def soak(cfg: dict, base: str, variant: dict) -> None:
         expect_out=expect,
         drain_s=cfg["drain_s"],
     )
+    return recs
 
 
-async def measure_idle(cfg: dict, args, variant: dict) -> float | None:
+async def measure_idle(cfg: dict, args, variant: dict) -> tuple[float | None, list]:
+    """Idle board power, with the raw samples. The first seconds after the soak still carry
+    its heat and power, so the first 20% of samples are excluded from the mean."""
     if cfg["idle_s"] <= 0:
-        return None
+        return None, []
     with PowerSampler(make_backend(args, variant, lambda: 0.0), hz=SAMPLE_HZ) as ps:
         await asyncio.sleep(cfg["idle_s"])
-    return sum(s.power_w for s in ps.samples) / len(ps.samples)
+    tail = ps.samples[len(ps.samples) // 5 :] or ps.samples
+    return sum(s.power_w for s in tail) / len(tail), ps.samples
 
 
 def _phase_extras(recs, load: dict, t0: float, slo: dict) -> dict:
@@ -205,8 +221,40 @@ def _phase_extras(recs, load: dict, t0: float, slo: dict) -> dict:
     return {"kind": "phased", "phases": out, "recovery_time_s": rec}
 
 
+def art_base(cell_json: Path) -> Path:
+    """Artifact prefix for a cell: '<cell>.json' -> '<cell>' (labels may contain dots)."""
+    return cell_json.with_name(cell_json.name[: -len(".json")])
+
+
+def _persist(
+    base: Path, args, cfg, variant, load, repeat, recs, power, scraper, marks
+) -> list[str]:
+    """Write the per-request, GPU and metrics artifacts next to the cell summary."""
+    anchor = args.anchor
+    header = {"anchor": anchor.to_dict(), "variant": variant["name"], "load": load,
+              "repeat": repeat, "slo": cfg["slo"], **{k: v for k, v in marks.items()}}  # fmt: skip
+    names = []
+    for suffix, fn in (
+        (".req.jsonl.gz", lambda p: write_requests(p, recs, header)),
+        (".gpu.csv.gz", lambda p: write_gpu_series(p, power.samples, anchor)),
+        (".metrics.jsonl.gz", lambda p: write_metrics_series(p, scraper.rows, anchor)),
+        (".metrics.raw.txt.gz", lambda p: write_raw_metrics(p, scraper.raw, anchor)),
+    ):
+        path = base.with_name(base.name + suffix)
+        fn(path)
+        names.append(path.name)
+    return names
+
+
 async def run_load(
-    cfg: dict, load: dict, load_idx: int, base: str, variant: dict, args, repeat: int
+    cfg: dict,
+    load: dict,
+    load_idx: int,
+    base: str,
+    variant: dict,
+    args,
+    repeat: int,
+    cell_json: Path | None = None,
 ) -> dict:
     make_body, expect = _body_fn(cfg, variant, salt_for(repeat, load_idx), load)
     url = f"{base}/v1/completions"
@@ -268,9 +316,23 @@ async def run_load(
     energy = energy_between(power.samples, ws, we)
     in_win = [s for s in power.samples if ws <= s.t <= we]
     out_tokens, n_done = summary["output_tokens"], summary["n_completed"]
-    stats = _metric_stats(scraper.rows, t0, t1)
+    stats = _metric_stats(scraper.rows, ws, we)  # SAME window as energy and throughput
+    marks = {"t0": t0, "ws": ws, "we": we, "t1": t1}
+    artifacts = (
+        _persist(art_base(cell_json), args, cfg, variant, load, repeat, recs, power, scraper, marks)
+        if cell_json is not None
+        else []
+    )
     return {
         "schema_version": SCHEMA_VERSION,
+        "artifacts": artifacts,
+        "clock": {
+            **args.anchor.to_dict(),
+            "wall_ws": args.anchor.wall(ws),
+            "wall_we": args.anchor.wall(we),
+            **marks,
+        },
+        "metrics_scrape_errors": scraper.errors,
         "summary": summary,
         "slo": slo,
         "warmup_s": cfg["warmup_s"],
@@ -357,13 +419,16 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
     async def passes(q: float) -> bool:
         n[0] += 1
         probe_load = {"mode": "open", "qps": round(q, 4)}
+        cell_json = cell_path(out, variant, probe_load, repeat)
         try:
-            res = await run_load(cfg, probe_load, 1000 + n[0], base, variant, args, repeat)
+            res = await run_load(
+                cfg, probe_load, 1000 + n[0], base, variant, args, repeat, cell_json
+            )
         except CellFailed as e:
             print(f"  probe q{q:.4g}: {e}", flush=True)
             return False
         _annotate(res, cfg, variant, probe_load, 1000 + n[0], repeat, args, man, idle_w)
-        write_atomic(cell_path(out, variant, probe_load, repeat), json.dumps(res, indent=2))
+        write_atomic(cell_json, json.dumps(res, indent=2))
         _print_cell(probe_load, res)
         _check_cell(res, strict, variant.get("engine") != "sglang")
         s = res["summary"]
@@ -380,6 +445,12 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
     print(f"  capacity[{variant['name']}] = {found['capacity']:.4g} qps{flag}", flush=True)
 
 
+def launch_dir(out: Path, variant: dict, repeat: int) -> Path:
+    d = out / "launches" / f"{variant['name']}__r{repeat}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
     variant = launch.variant
     loads = loads_for(cfg, variant)
@@ -393,6 +464,10 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
         print(f"[skip] {variant['name']} r{launch.repeat}: already done", flush=True)
         return
     real = args.gpu == "nvml"
+    ldir = launch_dir(out, variant, launch.repeat)
+    log_path = ldir / "server.log"
+    ev = args.events
+    cmd: list[str] = []
     if args.attach:
         print(f"[attach] {variant['name']} repeat={launch.repeat}: {args.attach}", flush=True)
         server_cm = AttachedServer(args.attach)
@@ -400,34 +475,66 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
         cmd = server_cmd(args.server, cfg, variant, PORT)
         print(f"[launch] {variant['name']} repeat={launch.repeat}: {' '.join(cmd)}", flush=True)
         server_cm = ServerProcess(
-            cmd,
-            PORT,
-            cfg["startup_seconds"] * 3,
-            quiet=args.quiet_server,
-            wait_gpu_free=real,
-            gpu_index=args.gpu_index,
-        )
-    async with server_cm as srv:
-        with (
-            PowerCap(variant.get("power_cap_w"), enabled=real, index=args.gpu_index),
-            ClockLock(variant.get("clock_lock_mhz"), enabled=real, index=args.gpu_index),
-        ):
-            await soak(cfg, srv.base, variant)
-            idle_w = await measure_idle(cfg, args, variant)
-            for i in todo:
-                load = loads[i]
-                if load["mode"] == "capacity_search":
-                    await run_capacity_search(
-                        cfg, load, srv.base, variant, args, launch.repeat, out, man, idle_w
+            cmd, PORT, cfg["startup_seconds"] * 3, quiet=args.quiet_server, wait_gpu_free=real,
+            gpu_index=args.gpu_index, log_path=log_path,
+        )  # fmt: skip
+    ev.emit("launch_start", variant=variant["name"], repeat=launch.repeat, cmd=cmd)
+    try:
+        async with server_cm as srv:
+            _write_launch_json(ldir, args, variant, launch, cmd, srv)
+            ev.emit("healthy", variant=variant["name"], repeat=launch.repeat)
+            with (
+                PowerCap(variant.get("power_cap_w"), enabled=real, index=args.gpu_index),
+                ClockLock(variant.get("clock_lock_mhz"), enabled=real, index=args.gpu_index),
+            ):
+                ev.emit("soak_start", variant=variant["name"])
+                soak_recs = await soak(cfg, srv.base, variant)
+                if soak_recs:
+                    write_requests(ldir / "soak.req.jsonl.gz", soak_recs,
+                                   {"anchor": args.anchor.to_dict(), "kind": "soak"})  # fmt: skip
+                idle_w, idle_samples = await measure_idle(cfg, args, variant)
+                if idle_samples:
+                    write_gpu_series(ldir / "idle.gpu.csv.gz", idle_samples, args.anchor)
+                ev.emit("loads_start", variant=variant["name"], idle_power_w=idle_w)
+                for i in todo:
+                    load = loads[i]
+                    if load["mode"] == "capacity_search":
+                        await run_capacity_search(
+                            cfg, load, srv.base, variant, args, launch.repeat, out, man, idle_w
+                        )
+                        continue
+                    cell_json = cell_path(out, variant, load, launch.repeat)
+                    res = await run_load(
+                        cfg, load, i, srv.base, variant, args, launch.repeat, cell_json
                     )
-                    continue
-                res = await run_load(cfg, load, i, srv.base, variant, args, launch.repeat)
-                _annotate(res, cfg, variant, load, i, launch.repeat, args, man, idle_w)
-                write_atomic(
-                    cell_path(out, variant, load, launch.repeat), json.dumps(res, indent=2)
-                )
-                _print_cell(load, res)
-                _check_cell(res, args.server != "mock", variant.get("engine") != "sglang")
+                    _annotate(res, cfg, variant, load, i, launch.repeat, args, man, idle_w)
+                    write_atomic(cell_json, json.dumps(res, indent=2))
+                    ev.emit("cell", variant=variant["name"], load=load_label(load),
+                            wall_ws=res["clock"]["wall_ws"], wall_we=res["clock"]["wall_we"])  # fmt: skip
+                    _print_cell(load, res)
+                    _check_cell(res, args.server != "mock", variant.get("engine") != "sglang")
+    except Exception as e:
+        # The server is already torn down by ServerProcess; the log and GPU state remain.
+        write_crash_bundle(ldir / "crash", log_path, e)
+        ev.emit("crash", variant=variant["name"], repeat=launch.repeat, error=repr(e))
+        raise
+    finally:
+        ev.emit("launch_end", variant=variant["name"], repeat=launch.repeat)
+
+
+def _write_launch_json(ldir: Path, args, variant: dict, launch, cmd: list[str], srv) -> None:
+    """Launch metadata with wall-clock anchors, so server.log lines align with GPU traces."""
+    t_spawn, t_healthy = getattr(srv, "t_spawn", None), getattr(srv, "t_healthy", None)
+    meta = {
+        "variant": variant["name"], "repeat": launch.repeat, "cmd": cmd,
+        "attach": args.attach, "anchor": args.anchor.to_dict(),
+        "t_spawn_mono": t_spawn, "t_healthy_mono": t_healthy,
+        "wall_spawn": args.anchor.wall(t_spawn) if t_spawn else None,
+        "wall_healthy": args.anchor.wall(t_healthy) if t_healthy else None,
+        "time_to_healthy_s": (t_healthy - t_spawn) if t_spawn and t_healthy else None,
+        "env": allowlisted_env(dict(os.environ)),
+    }  # fmt: skip
+    write_atomic(ldir / "launch.json", json.dumps(meta, indent=2))
 
 
 def _capacity_refs(cfg: dict) -> set[str]:
@@ -451,7 +558,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--usd-per-hr", type=float, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true", help="print cost estimate and exit")
-    ap.add_argument("--quiet-server", action="store_true")
+    ap.add_argument(
+        "--quiet-server",
+        action="store_true",
+        help="(server output always goes to launches/*/server.log)",
+    )
+    ap.add_argument(
+        "--capture-env",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="write _env/ bundle (default: on unless --server mock)",
+    )
     ap.add_argument(
         "--attach", help="use this already-running server (http://host:port); no launch"
     )
@@ -461,6 +578,8 @@ def main(argv: list[str] | None = None) -> int:
         help="dry-run only: stand-in capacity (qps) for rel loads when no capacity file exists yet",
     )
     args = ap.parse_args(argv)
+    if args.capture_env is None:
+        args.capture_env = args.server != "mock"
 
     out = Path(args.out)
     cfg = load_config(args.config)
@@ -491,8 +610,17 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGHUP, _raise_interrupt)
 
     out.mkdir(parents=True, exist_ok=True)
-    man = manifest()
+    args.anchor = Anchor.now()
+    args.events = EventLog(out / "events.jsonl", args.anchor)
+    man = {**manifest(), "anchor": args.anchor.to_dict(), "config": args.config}
     write_atomic(out / "manifest.json", json.dumps(man, indent=2))
+    if args.capture_env:  # pip freeze, nvidia-smi -q (ids hashed), lscpu, HF snapshot, ...
+        pins = [
+            (v.get("model", cfg["model"]), v["server_args"][v["server_args"].index("--revision") + 1])
+            for v in cfg["variants"] if "--revision" in v.get("server_args", [])
+        ]  # fmt: skip
+        capture_env(out, pins)
+    args.events.emit("run_start", config=args.config, argv=argv)
     skipped = out / "skipped.jsonl"
     started = time.monotonic()
     pad = budget.load_policy()["safety_margin"] if real else 0.0
