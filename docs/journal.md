@@ -48,3 +48,7 @@ Pre-run amendments to prereg-v2 (all before any GPU data; none outcome-dependent
 ## 2026-10-05 19:21 EDT (at 1f82639)
 
 Tagged prereg-v2.1: amendments A1-A6 recorded in docs/PREREG-v2-amendments.md (PREREG-v2.md untouched). Still no GPU data.
+
+## 2026-10-06 07:06 EDT (at bb43365)
+
+Tagged prereg-v2.2 after 5 pre-deployment reviews (data completeness, real-server protocol, landscape, model/workload, energy telemetry). Fixed bugs: prefix hit rate matched always-zero external_* counters; t_last missed empty-text finish chunks; real-vLLM cells now fail without usage/metrics. Pinned all engine settings + model revisions via a config generator (drift test). User chose all four exploratory extras (shape loads, overload/recovery, MoE, SGLang): plan ~18.2 GPU-h; they are last-priority and budget-cut. Honest caveats: SGLang flags UNVERIFIED (no source offline); fp8-kv8 is a kernel+dtype confound; the repo's own model says prefill is ~59% of saturated time at 512/128 so P2/P3 may fail. STILL NOT BUILT: persistence layer (server log, per-request records, GPU/metrics series, env bundle), watchdog, off-pod sync, canary, schema v3, figures.
