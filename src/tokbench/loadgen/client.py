@@ -77,7 +77,8 @@ async def _one(
     try:
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
-                rec.error = f"http {resp.status}"
+                body_txt = (await resp.text())[:120].replace("\n", " ")
+                rec.error = f"http {resp.status}: {body_txt}" if body_txt else f"http {resp.status}"
                 rec.t_last = time.perf_counter()
                 return rec
             async for raw in resp.content:
@@ -104,6 +105,11 @@ async def _one(
                         rec.itls.append(now - rec.t_last)
                     rec.t_last = now
                     chunks += 1
+                elif choices and choices[0].get("finish_reason") and rec.t_first is not None:
+                    # The last token can arrive in a chunk with empty text (a token ending
+                    # mid-UTF-8, a special token, ignore_eos past EOS). Generation ended
+                    # here, so t_last must not stay at the previous text chunk.
+                    rec.t_last = time.perf_counter()
         rec.n_out = usage_tokens if usage_tokens is not None else chunks
         if not rec.error:
             if rec.t_first is None:

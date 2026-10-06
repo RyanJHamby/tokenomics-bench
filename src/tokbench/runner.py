@@ -115,13 +115,19 @@ def _metric_stats(rows: list[tuple[float, dict]], t0: float, t1: float) -> dict:
     return out
 
 
+PREFIX_HITS = "vllm:prefix_cache_hits_total"
+PREFIX_QUERIES = "vllm:prefix_cache_queries_total"
+
+
 def counter_deltas(stats: dict) -> dict:
-    """Deltas of cumulative counters over the window, plus prefix-cache hit rate."""
+    """Deltas of cumulative counters over the window, plus prefix-cache hit rate.
+
+    The hit rate uses EXACT metric names. vLLM also registers
+    `vllm:external_prefix_cache_{hits,queries}_total` (always present, zero without a KV
+    connector); a substring match picked those and silently dropped the hit rate."""
     d = {k: v["last"] - v["first"] for k, v in stats.items() if k.endswith("_total")}
-    hits = next((v for k, v in d.items() if "prefix_cache_hits" in k), None)
-    qs = next((v for k, v in d.items() if "prefix_cache_queries" in k), None)
-    if hits is not None and qs:
-        d["prefix_cache_hit_rate"] = hits / qs
+    if d.get(PREFIX_QUERIES):
+        d["prefix_cache_hit_rate"] = d.get(PREFIX_HITS, 0.0) / d[PREFIX_QUERIES]
     return d
 
 
@@ -272,8 +278,15 @@ def _print_cell(load: dict, res: dict) -> None:
     )
 
 
-def _check_cell(res: dict) -> None:
+def _check_cell(res: dict, strict: bool = False) -> None:
+    """`strict` (real vLLM): missing usage or empty server metrics mean the measurement is
+    not what it claims (workload_ok would pass vacuously), so fail instead of proceeding."""
     s = res["summary"]
+    if strict:
+        if s["mean_prompt_tokens"] is None:
+            raise CellFailed("no usage chunk from the server: prompt length is unverified")
+        if "vllm:num_requests_running" not in res["server_metrics"]:
+            raise CellFailed("no vLLM /metrics scraped during the window (endpoint or name wrong)")
     if not res["client"]["client_ok"]:
         print(
             f"  WARN client saturated: loop lag p99 {res['client']['loop_lag_p99_ms']:.1f} ms; "
@@ -293,6 +306,7 @@ def _check_cell(res: dict) -> None:
 
 async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, idle_w) -> None:
     slo, n = cfg["slo"], [0]
+    strict = args.server == "vllm"
 
     async def passes(q: float) -> bool:
         n[0] += 1
@@ -305,7 +319,7 @@ async def run_capacity_search(cfg, load, base, variant, args, repeat, out, man, 
         _annotate(res, cfg, variant, probe_load, 1000 + n[0], repeat, args, man, idle_w)
         write_atomic(cell_path(out, variant, probe_load, repeat), json.dumps(res, indent=2))
         _print_cell(probe_load, res)
-        _check_cell(res)
+        _check_cell(res, strict)
         s = res["summary"]
         return (
             s["n_failed"] == 0 and s["ttft_p99"] <= slo["ttft_s"] and s["tpot_p99"] <= slo["tpot_s"]
@@ -366,7 +380,7 @@ async def run_launch(cfg: dict, launch, args, out: Path, man: dict) -> None:
                     cell_path(out, variant, load, launch.repeat), json.dumps(res, indent=2)
                 )
                 _print_cell(load, res)
-                _check_cell(res)
+                _check_cell(res, args.server == "vllm")
 
 
 def _raise_interrupt(signum, _frame) -> None:

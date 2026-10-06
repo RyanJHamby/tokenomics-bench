@@ -113,3 +113,65 @@ async def test_exactly_one_stop_condition_required(url):
         await run_open_loop(url, body, 5)
     with pytest.raises(ValueError):
         await run_closed_loop(url, body, 1, 5, duration_s=1.0)
+
+
+async def test_last_token_in_an_empty_text_finish_chunk_still_sets_t_last():
+    """vLLM can emit the final token as a chunk with text='' (mid-UTF-8, special token,
+    ignore_eos past EOS) carrying finish_reason; t_last must move to that chunk."""
+    import asyncio
+    import json as _json
+
+    from aiohttp import web
+
+    async def handler(request):
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        for i in range(3):
+            await asyncio.sleep(0.02)
+            await resp.write(f"data: {_json.dumps({'choices': [{'text': f't{i}'}]})}\n\n".encode())
+        await asyncio.sleep(0.2)  # the last token takes a while, then arrives with no text
+        await resp.write(
+            f"data: {_json.dumps({'choices': [{'text': '', 'finish_reason': 'length'}]})}\n\n".encode()
+        )
+        await resp.write(
+            f"data: {_json.dumps({'choices': [], 'usage': {'prompt_tokens': 4, 'completion_tokens': 4}})}\n\n".encode()
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/completions", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        recs, _ = await run_closed_loop(
+            str(server.make_url("/v1/completions")),
+            lambda i: {"prompt": [1, 2, 3, 4]},
+            1,
+            1,
+            expect_out=4,
+        )
+    finally:
+        await server.close()
+    r = recs[0]
+    assert r.ok and r.n_out == 4
+    assert r.t_last - r.t_first >= 0.23  # 2 x 20 ms + the 200 ms before the empty-text last token
+
+
+async def test_http_error_bodies_are_kept_for_diagnosis():
+    from aiohttp import web
+
+    async def handler(request):
+        return web.json_response({"error": "token id 99999 out of vocab"}, status=400)
+
+    app = web.Application()
+    app.router.add_post("/v1/completions", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        recs, _ = await run_closed_loop(
+            str(server.make_url("/v1/completions")), lambda i: {"prompt": [1]}, 1, 1
+        )
+    finally:
+        await server.close()
+    assert recs[0].error.startswith("http 400") and "out of vocab" in recs[0].error

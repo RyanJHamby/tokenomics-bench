@@ -286,3 +286,37 @@ def test_every_repeat_of_a_capacity_search_runs_not_just_the_first(setup):
     mt = {p.name: p.stat().st_mtime_ns for p in out.glob("capacity__*.json")}
     assert _run(make(cfg), out) == 0  # resume: nothing rerun
     assert {p.name: p.stat().st_mtime_ns for p in out.glob("capacity__*.json")} == mt
+
+
+def test_prefix_hit_rate_uses_exact_names_and_ignores_the_always_present_external_counters():
+    """Regression (found by the real-server review): vLLM registers
+    vllm:external_prefix_cache_*_total at 0; a substring match picked those, so the real
+    hit rate was silently dropped and the B2 block would have had none."""
+    f = {"first": 0.0}
+    stats = {
+        "vllm:external_prefix_cache_hits_total": {**f, "last": 0.0},
+        "vllm:external_prefix_cache_queries_total": {**f, "last": 0.0},
+        "vllm:prefix_cache_hits_total": {"first": 100.0, "last": 900.0},
+        "vllm:prefix_cache_queries_total": {"first": 200.0, "last": 1200.0},
+    }
+    d = runner.counter_deltas(stats)
+    assert d["prefix_cache_hit_rate"] == pytest.approx(0.8)
+    assert "prefix_cache_hit_rate" not in runner.counter_deltas(
+        {"vllm:external_prefix_cache_queries_total": {"first": 1.0, "last": 5.0}}
+    )
+
+
+def test_strict_mode_rejects_cells_without_usage_or_server_metrics():
+    ok = {
+        "summary": {"mean_prompt_tokens": 512, "errors": [], "n_failed": 0, "n_requests": 10},
+        "server_metrics": {"vllm:num_requests_running": {}},
+        "workload_ok": True,
+        "client": {"client_ok": True},
+    }
+    runner._check_cell(ok, strict=True)
+    no_usage = {**ok, "summary": {**ok["summary"], "mean_prompt_tokens": None}}
+    with pytest.raises(CellFailed, match="no usage chunk"):
+        runner._check_cell(no_usage, strict=True)
+    runner._check_cell(no_usage, strict=False)  # mock/fake runs stay permissive
+    with pytest.raises(CellFailed, match="metrics"):
+        runner._check_cell({**ok, "server_metrics": {}}, strict=True)
