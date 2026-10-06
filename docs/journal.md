@@ -60,3 +60,7 @@ Built the pre-deployment P0 set from the five reviews: per-launch server.log; pe
 ## 2026-10-06 07:39 EDT (at 4ee48da)
 
 README rewritten for external readers (experts/recruiters): no measured numbers (none exist), novelty framed as replicate-and-extend of arXiv 2605.11999, design-principles table with file links, experiment plan + P1-P6, limitations, accurate AI disclosure. Flags for author: no LICENSE file yet; 'How this was built' needs the author's own review status; prior-work attributions (Watt Counts, ML.ENERGY, InferenceX) come from agent web research and were not independently re-verified.
+
+## 2026-10-06 07:45 EDT (at b9277b7)
+
+Pre-expert-review fixes: (1) MIT LICENSE added (author chose MIT). (2) README disclosure now says author directed the work and has NOT yet read every file; review in progress. (3) Prior-work claims verified this session against sources: Illusion of Power Capping (arXiv 2605.11999) full text confirms single H200, vLLM BF16, ~4B dense (Minitron/TransMLA/Qwen3.5/Nemotron/Qwen3-4B), batch 1-32, no SLO/goodput, no code released, limitations name MoE + other GPU generations; Watt Counts (2604.09048) = 5000+ experiments, 50 LLMs, 10 NVIDIA GPUs; ML.ENERGY = NeurIPS D&B 2025 spotlight; InferenceX formerly InferenceMAX, has power_model/. Removed Zeus/MLPerf phrasings I could not confirm. (4) Hardware: L40S (48GB GDDR6, 864GB/s, FP16 362.05/FP8 733 dense, 350W) and H100 SXM (80GB, 3.35TB/s, FP16 989.5/FP8 1979 dense = half of listed sparsity, 700W) verified vs NVIDIA pages 2026-10-06; H100-PCIe still unverified. Amendment A14.
