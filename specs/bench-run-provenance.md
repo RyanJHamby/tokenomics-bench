@@ -16,7 +16,8 @@ non_goals:
 risk_tier: 2
 max_runs: 3
 autonomy: inherit
-status: draft
+status: ready
+issue: 3
 ---
 
 ## Why
@@ -38,3 +39,4 @@ Run directory layout (see `tests/test_figures.py` for how a mock run is made): `
 Line length 100 (ruff). The test makes a real mock run (~6 s), no GPU.
 
 ## Log
+- 2026-10-31 ready, issue #3 (handshake was provisional; repo not yet onboarded with ap init; waiting for the owner's agent-ready label)
