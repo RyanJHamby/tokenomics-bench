@@ -68,3 +68,7 @@ Pre-expert-review fixes: (1) MIT LICENSE added (author chose MIT). (2) README di
 ## 2026-10-06 07:56 EDT (at 2fe33c1)
 
 make figures built (8 figures, saved-data only, skip-never-fake, synthetic watermark in-image). Used the dataviz method: validated palette slots 1-3 all-pairs (aqua contrast WARN covered by direct labels), fixed order by arm family, no dual axes. Render check found and I fixed: footer/watermark collision, legend over data labels, clipped y-label, sci-notation log ticks, flat-zero panels, overlapping p99 labels. Tests caught: generator truthiness (any(d.glob) always True) and plotting an all-zero clock. README now embeds ONE watermarked synthetic example with an explicit not-a-measurement caption. 207 tests. Still not built: result-schema doc, parity gate wiring, provenance index.
+
+## 2026-10-31 11:30 EDT (at b28f127)
+
+Wrote 3 draft specs (readiness-report, claim-guard, run-provenance) with strict-xfail tests. Decision: claim-guard exempts journal.md (it quotes labelled predictions like ~5.8-12 req/s) plus PREDICTIONS/PREREG; units limited to tok/s, req/s, J/token, $/Mtok so SLO ms and margins are not flagged. Throwaway reference impls proved each test satisfiable, then deleted.
