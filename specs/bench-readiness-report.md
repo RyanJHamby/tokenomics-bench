@@ -17,7 +17,8 @@ non_goals:
 risk_tier: 2
 max_runs: 3
 autonomy: inherit
-status: draft
+status: ready
+issue: 2
 ---
 
 ## Why
@@ -42,3 +43,4 @@ unpinned_variants, vllm_pin, ready`.
 Line length 100 (ruff).
 
 ## Log
+- 2026-10-31 ready, issue #2 (handshake was provisional; repo not yet onboarded with ap init; waiting for the owner's agent-ready label)

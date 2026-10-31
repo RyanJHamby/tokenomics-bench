@@ -16,7 +16,8 @@ non_goals:
 risk_tier: 1
 max_runs: 3
 autonomy: inherit
-status: draft
+status: ready
+issue: 4
 ---
 
 ## Why
@@ -37,3 +38,4 @@ Match the style of `src/tokbench/budget.py`. Line length 100 (ruff). The README 
 without numbers, so the real-repo test passes only if the regex requires a digit before the unit.
 
 ## Log
+- 2026-10-31 ready, issue #4 (handshake was provisional; repo not yet onboarded with ap init; waiting for the owner's agent-ready label)
