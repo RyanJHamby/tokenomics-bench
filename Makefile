@@ -1,10 +1,11 @@
-.PHONY: install test lint demo estimate configs figures
+.PHONY: install test lint check demo estimate configs figures
 install:
 	pip install -e ".[dev]"
 test:
 	pytest -q
 lint:
 	ruff check . && ruff format --check src tests
+check: lint test  ## what CI runs
 
 demo:  ## synthetic end-to-end run on the mock server; output is NOT a result
 	python -m tokbench.runner configs/demo_synthetic.yaml --server mock --gpu fake \
